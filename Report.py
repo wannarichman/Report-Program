@@ -35,12 +35,11 @@ if "data" in st.session_state:
     st.markdown(f"# {data['title']}")
     st.divider()
 
-    # 탭 이름 편집 로직
+    # 탭 이름 편집
     tab_titles = []
     for i, p in enumerate(data['pages']):
         if edit_mode:
-            new_tab_name = st.text_input(f"P{i+1} 탭 이름 수정", p.get('tab', ''), key=f"tab_edit_{i}")
-            p['tab'] = new_tab_name
+            p['tab'] = st.text_input(f"P{i+1} 탭 이름 수정", p.get('tab', ''), key=f"tab_edit_{i}")
         tab_titles.append(f"P{i+1}. {p.get('tab', '')}")
 
     tabs = st.tabs(tab_titles)
@@ -52,8 +51,8 @@ if "data" in st.session_state:
             
             with col_main:
                 if edit_mode:
-                    p['header'] = st.text_input(f"P{i+1} 헤더 수정", p['header'], key=f"h_{i}")
-                    p['content'] = st.text_area(f"P{i+1} 본문 수정", p['content'], height=200, key=f"c_{i}")
+                    p['header'] = st.text_input(f"P{i+1} 헤더 수정", p.get('header', ''), key=f"h_{i}")
+                    p['content'] = st.text_area(f"P{i+1} 본문 수정", p.get('content', ''), height=200, key=f"c_{i}")
                     img_width = st.slider(f"그림 크기 조절 (%)", 10, 100, 70, key=f"img_w_{i}")
                 else:
                     img_width = 70
@@ -72,24 +71,25 @@ if "data" in st.session_state:
                 
                 if "highlight" in p:
                     if edit_mode:
-                        p['highlight'] = st.text_input(f"핵심 메시지 수정", p['highlight'], key=f"hl_{i}")
-                    st.success(f"**💡 핵심 메시지: {p['highlight']}**")
+                        p['highlight'] = st.text_input(f"핵심 메시지 수정", p.get('highlight', ''), key=f"hl_{i}")
+                    st.success(f"**💡 핵심 메시지: {p.get('highlight', '')}**")
 
             with col_side:
-                # [수정] 지표 부분 편집 기능 강화
+                # [핵심] 지표 섹션 대제목 편집 기능 추가
+                # JSON에 'metrics_title'이 없으면 기본값 '📊 주요 지표' 사용
+                if 'metrics_title' not in p:
+                    p['metrics_title'] = "📊 주요 지표"
+                
                 if edit_mode:
-                    st.subheader("📊 지표 데이터 편집")
-                else:
-                    st.subheader("📊 주요 지표")
+                    p['metrics_title'] = st.text_input(f"P{i+1} 지표 섹션 제목 수정", p['metrics_title'], key=f"mt_{i}")
+                
+                st.subheader(p['metrics_title'])
 
                 if "metrics" in p:
                     for idx, m in enumerate(p['metrics']):
                         if edit_mode:
-                            # 1. 지표 제목(Label) 수정
                             m[0] = st.text_input(f"지표명 {idx+1}", m[0], key=f"m_lab_{i}_{idx}")
-                            # 2. 지표 수치(Value) 수정
                             m[1] = st.text_input(f"수치 {idx+1}", m[1], key=f"m_val_{i}_{idx}")
-                            # 3. 지표 상태/변화량(Delta) 수정 (비효율, 단방향 등)
                             m[2] = st.text_input(f"상태 메시지 {idx+1}", m[2], key=f"m_det_{i}_{idx}")
                             st.divider()
                         
@@ -103,7 +103,7 @@ if "data" in st.session_state:
         st.download_button(
             label="수정된 내용을 JSON 파일로 저장",
             data=new_json,
-            file_name="posco_report_final.json",
+            file_name="posco_report_full_editable.json",
             mime="application/json"
         )
 else:
