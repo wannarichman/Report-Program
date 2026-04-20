@@ -15,7 +15,7 @@ with st.sidebar:
     st.subheader("📂 데이터 관리")
     uploaded_file = st.file_uploader("JSON 파일 로드", type=['json', 'js'])
     
-    # 편집 모드 활성화
+    # 전체 편집 모드 활성화
     edit_mode = st.toggle("📝 전체 편집 및 가독성 설정 모드", value=False)
 
 # 3. 데이터 및 세션 관리
@@ -35,11 +35,10 @@ if "data" in st.session_state:
     st.markdown(f"# {data['title']}")
     st.divider()
 
-    # 4. 탭 이름(페이지 제목)까지 수정 가능하도록 반영
+    # 탭 이름 편집 로직
     tab_titles = []
     for i, p in enumerate(data['pages']):
         if edit_mode:
-            # 사이드바 혹은 상단에서 탭 명칭 수정
             new_tab_name = st.text_input(f"P{i+1} 탭 이름 수정", p.get('tab', ''), key=f"tab_edit_{i}")
             p['tab'] = new_tab_name
         tab_titles.append(f"P{i+1}. {p.get('tab', '')}")
@@ -54,7 +53,7 @@ if "data" in st.session_state:
             with col_main:
                 if edit_mode:
                     p['header'] = st.text_input(f"P{i+1} 헤더 수정", p['header'], key=f"h_{i}")
-                    p['content'] = st.text_area(f"P{i+1} 본문 수정 (엔터로 구분 가능)", p['content'], height=200, key=f"c_{i}")
+                    p['content'] = st.text_area(f"P{i+1} 본문 수정", p['content'], height=200, key=f"c_{i}")
                     img_width = st.slider(f"그림 크기 조절 (%)", 10, 100, 70, key=f"img_w_{i}")
                 else:
                     img_width = 70
@@ -64,12 +63,11 @@ if "data" in st.session_state:
                 if "image" in p:
                     st.image(p["image"], width=int(img_width * 10))
                 
-                # [개선] 본문 가독성 처리: 줄바꿈을 기준으로 나누어 각각 크게 출력
+                # 본문 가독성 강화 출력
                 content_body = p.get('content', '')
                 paragraphs = content_body.split('\n')
                 for para in paragraphs:
                     if para.strip():
-                        # 각 문단을 굵고 큰 글씨(h3급)로 출력
                         st.markdown(f"### **{para.strip()}**")
                 
                 if "highlight" in p:
@@ -78,15 +76,26 @@ if "data" in st.session_state:
                     st.success(f"**💡 핵심 메시지: {p['highlight']}**")
 
             with col_side:
-                st.subheader("📊 지표 편집")
+                # [수정] 지표 부분 편집 기능 강화
+                if edit_mode:
+                    st.subheader("📊 지표 데이터 편집")
+                else:
+                    st.subheader("📊 주요 지표")
+
                 if "metrics" in p:
                     for idx, m in enumerate(p['metrics']):
                         if edit_mode:
-                            m[0] = st.text_input(f"항목명", m[0], key=f"m_lab_{i}_{idx}")
-                            m[1] = st.text_input(f"수치", m[1], key=f"m_val_{i}_{idx}")
+                            # 1. 지표 제목(Label) 수정
+                            m[0] = st.text_input(f"지표명 {idx+1}", m[0], key=f"m_lab_{i}_{idx}")
+                            # 2. 지표 수치(Value) 수정
+                            m[1] = st.text_input(f"수치 {idx+1}", m[1], key=f"m_val_{i}_{idx}")
+                            # 3. 지표 상태/변화량(Delta) 수정 (비효율, 단방향 등)
+                            m[2] = st.text_input(f"상태 메시지 {idx+1}", m[2], key=f"m_det_{i}_{idx}")
+                            st.divider()
+                        
                         st.metric(label=m[0], value=m[1], delta=m[2])
 
-    # 5. JSON 저장
+    # 4. JSON 저장 및 동기화
     if edit_mode:
         st.divider()
         st.subheader("💾 데이터 최종 동기화")
@@ -94,7 +103,7 @@ if "data" in st.session_state:
         st.download_button(
             label="수정된 내용을 JSON 파일로 저장",
             data=new_json,
-            file_name="posco_report_updated.json",
+            file_name="posco_report_final.json",
             mime="application/json"
         )
 else:
