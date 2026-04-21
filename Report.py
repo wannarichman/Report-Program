@@ -11,7 +11,12 @@ st.set_page_config(page_title="AI Live Sync Master Builder", layout="wide")
 
 st.markdown("""
     <style>
-    [data-testid="stAppViewContainer"] { background-color: #ffffff !important; }
+    /* 앱 전체 배경을 깨끗한 흰색으로 */
+    [data-testid="stAppViewContainer"] { 
+        background-color: #ffffff !important; 
+    }
+    
+    /* 메인 화면 컨테이너: 심플하고 세련된 얇은 테두리와 은은한 그림자 */
     .main [data-testid="stVerticalBlockBorderWrapper"] {
         background-color: #ffffff !important;
         border: 1px solid #dee2e6 !important; 
@@ -20,17 +25,67 @@ st.markdown("""
         box-shadow: 0 4px 16px rgba(0,0,0,0.04) !important; 
         margin-bottom: 50px !important; 
     }
+    
+    /* 사이드바 내부 컨테이너 레이아웃 유지 */
     [data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"] {
-        border: 1px solid #dee2e6 !important; padding: 15px !important; box-shadow: none !important; margin-bottom: 10px !important;
+        border: 1px solid #dee2e6 !important; 
+        padding: 15px !important; 
+        box-shadow: none !important; 
+        margin-bottom: 10px !important;
     }
-    .side-slot-card { padding: 10px 0px; margin-bottom: 16px; }
-    .text-line { white-space: pre-wrap; word-wrap: break-word; line-height: 1.8; margin-bottom: 10px; color: #334155; }
-    .voice-panel { background: #ffffff; border: 1px solid #dee2e6; padding: 15px; border-radius: 16px; text-align: center; margin-bottom: 15px; }
+    
+    /* 우측 사이드 슬롯: 파란 테두리 없이 깔끔한 여백 레이아웃 */
+    .side-slot-card {
+        padding: 10px 0px; 
+        margin-bottom: 16px;
+    }
+    
+    /* 줄 단위 편집 텍스트 기본 스타일 */
+    .text-line { 
+        white-space: pre-wrap; 
+        word-wrap: break-word; 
+        line-height: 1.8; 
+        margin-bottom: 10px; 
+        color: #334155; 
+    }
+    
+    /* 음성 연결 패널 디자인 */
+    .voice-panel { 
+        background: #ffffff; 
+        border: 1px solid #dee2e6; 
+        padding: 15px; 
+        border-radius: 16px; 
+        text-align: center; 
+        margin-bottom: 15px; 
+    }
     
     /* 음성 연결/음소거 버튼 스타일링 */
-    .btn-join { padding: 8px 16px; background: #007bff; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; width: 45%; margin: 0 2%; }
-    .btn-mute { padding: 8px 16px; background: #6c757d; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; width: 45%; margin: 0 2%; display: none; }
-    .btn-mute.active { background: #dc3545; } /* 음소거 시 빨간색 */
+    .btn-join { 
+        padding: 8px 16px; 
+        background: #007bff; 
+        color: white; 
+        border: none; 
+        border-radius: 8px; 
+        cursor: pointer; 
+        font-weight: bold; 
+        width: 45%; 
+        margin: 0 2%; 
+    }
+    .btn-mute { 
+        padding: 8px 16px; 
+        background: #6c757d; 
+        color: white; 
+        border: none; 
+        border-radius: 8px; 
+        cursor: pointer; 
+        font-weight: bold; 
+        width: 45%; 
+        margin: 0 2%; 
+        display: none; 
+    }
+    .btn-mute.active { 
+        background: #dc3545; 
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -119,12 +174,10 @@ def agora_voice_system(app_id, channel, user_label):
                 localTracks.audioTrack = await AgoraRTC.createMicrophoneAudioTrack();
                 await client.publish([localTracks.audioTrack]);
                 
-                // UI 변경: 접속 버튼 숨기고 음소거 버튼 표시
                 document.getElementById("join").style.display = "none";
                 const muteBtn = document.getElementById("mute");
                 muteBtn.style.display = "inline-block";
                 
-                // 볼륨 인디케이터 (내 마이크 레벨만 표시)
                 client.on("volume-indicator", (vs) => {{ 
                     vs.forEach((v) => {{ 
                         if(v.uid === 0 && !isMuted) document.getElementById("level-bar").style.width = Math.min(v.level * 2, 100) + "%"; 
@@ -132,7 +185,6 @@ def agora_voice_system(app_id, channel, user_label):
                     }}); 
                 }});
                 
-                // 다른 참여자 오디오 수신
                 client.on("user-published", async (u, m) => {{ 
                     await client.subscribe(u, m); 
                     if(m === "audio") u.audioTrack.play(); 
@@ -176,22 +228,18 @@ with st.sidebar:
     except: 
         st.warning("⚠️ Agora ID가 설정되지 않았습니다.")
 
-    # [핵심] 음성 참여자 실시간 명단 복구
     with st.container(border=True):
         st.caption("👥 실시간 참여 명단")
         if is_reporter:
-            # 보고자가 명단을 강제로 동기화/관리할 수 있는 기능
             options = ["📢 보고자"] + [f"👤 참여자 {i+1}" for i in range(len(shared_store['user_labels']))]
             shared_store["voice_active_users_list"] = st.multiselect("명단 동기화", options=options, default=shared_store.get("voice_active_users_list", []))
         
-        # 현재 접속된 명단 출력
         for user in shared_store.get("voice_active_users_list", []): 
             st.markdown(f"🟢 **{user}**")
 
     if is_reporter:
         st.divider()
         
-        # [핵심] 가이드 다운로드 버튼명 변경 및 캡션 추가
         st.download_button(
             label="📘 보고서 표준 양식 다운로드",
             data=json.dumps(get_sample_json_guide(), indent=4, ensure_ascii=False),
@@ -231,6 +279,8 @@ with st.sidebar:
 # ==========================================
 @st.fragment(run_every="1s")
 def main_content_area(edit_enabled):
+    
+    # --- 6-1. 실시간 상호소통 채팅 ---
     with st.expander("💬 실시간 상호소통 채팅", expanded=False):
         c1, c2 = st.columns([4, 1])
         msg = c1.text_input("메시지", key="chat_in", label_visibility="collapsed")
@@ -239,6 +289,7 @@ def main_content_area(edit_enabled):
         chat_box = "".join([f"<div style='margin-bottom:6px;'>{m}</div>" for m in shared_store["chat_history"][-10:]])
         st.markdown(f"<div style='height:120px; overflow-y:auto; background:#f8f9fa; padding:12px; border-radius:10px; border:1px solid #dee2e6;'>{chat_box}</div>", unsafe_allow_html=True)
 
+    # --- 6-2. 빈 데이터 처리 ---
     if shared_store["report_data"] is None:
         st.markdown("<div style='text-align:center; padding:150px; color:#64748b;'><h2>📂 리포트를 로드하거나 양식을 다운로드하세요.</h2></div>", unsafe_allow_html=True)
         if edit_enabled and st.button("📄 완전히 새로운 보고서 시작하기"):
@@ -248,20 +299,24 @@ def main_content_area(edit_enabled):
 
     data = shared_store["report_data"]
     
+    # --- 6-3. 인덱스 에러 방지 ---
     if shared_store["current_page"] >= len(data['pages']):
         shared_store["current_page"] = max(0, len(data['pages']) - 1)
 
     p = data['pages'][shared_store["current_page"]]
     
+    # --- 6-4. 페이지 관리 및 탭 내비게이션 ---
     if edit_enabled:
         st.write("---")
         pc1, pc2 = st.columns([1, 5])
         if pc1.button("➕ 페이지 추가"):
             data['pages'].insert(shared_store["current_page"] + 1, create_empty_page())
-            shared_store["current_page"] += 1; st.rerun()
+            shared_store["current_page"] += 1
+            st.rerun()
         if pc2.button("🗑️ 페이지 삭제") and len(data['pages']) > 1:
             data['pages'].pop(shared_store["current_page"])
-            shared_store["current_page"] = max(0, shared_store["current_page"] - 1); st.rerun()
+            shared_store["current_page"] = max(0, shared_store["current_page"] - 1)
+            st.rerun()
 
     if is_reporter:
         tabs = {i: f"P{i+1}. {pg.get('tab', '')}" for i, pg in enumerate(data['pages'])}
@@ -269,6 +324,7 @@ def main_content_area(edit_enabled):
         if edit_enabled: 
             p['tab'] = st.text_input("🔖 탭 이름 수정", p.get('tab', ''), key=f"t_ed_{shared_store['current_page']}")
 
+    # --- 6-5. 대제목 설정 및 렌더링 ---
     if edit_enabled:
         with st.expander("📌 페이지 대제목 디자인 설정"):
             p['header'] = st.text_input("제목 내용", p.get('header', ''), key="h_ed")
@@ -278,6 +334,7 @@ def main_content_area(edit_enabled):
 
     st.markdown(f'<h1 style="text-align:center; font-size:{p.get("header_fs", 45)}px; color:{p.get("header_color", "#1a1c1e")}; padding-bottom:20px;">{p.get("header")}</h1>', unsafe_allow_html=True)
 
+    # --- 6-6. 섹션 (블록) 루프 ---
     sections = p.setdefault('sections', [])
     if edit_enabled and st.button("➕ 새로운 세로 섹션 뭉치 추가", key=f"add_sec_{shared_store['current_page']}"):
         sections.append({
@@ -290,6 +347,7 @@ def main_content_area(edit_enabled):
     for s_idx, sec in enumerate(sections):
         with st.container(border=True): 
             
+            # --- 섹션 제목 및 비율 설정 ---
             if edit_enabled:
                 sc1, sc2, sc3, sc4 = st.columns([2.5, 1, 1, 1.5])
                 sec['title'] = sc1.text_input("섹션 제목", sec.get('title', ''), key=f"st_{shared_store['current_page']}_{s_idx}", label_visibility="collapsed")
@@ -302,6 +360,7 @@ def main_content_area(edit_enabled):
             current_ratio = sec.get('col_ratio', 2.0)
             col_main, col_side = st.columns([current_ratio, 1], gap="medium")
             
+            # --- [좌측 영역] 본문 그림 및 문구 ---
             with col_main:
                 if edit_enabled:
                     with st.expander("🖼️ 본문(좌측) 그림 및 스케일 관리"):
@@ -314,7 +373,8 @@ def main_content_area(edit_enabled):
                             sec['img_width'] = st.slider("수동 너비 조절", 100, 1200, int(sec.get('img_width', 750)), key=f"sw_{shared_store['current_page']}_{s_idx}")
                             
                         if st.button("🗑️ 그림 삭제", key=f"simg_del_{shared_store['current_page']}_{s_idx}"): 
-                            sec['main_image'] = None; st.rerun()
+                            sec['main_image'] = None
+                            st.rerun()
                 
                 if sec.get('main_image'): 
                     if sec.get('full_width', True):
@@ -336,30 +396,37 @@ def main_content_area(edit_enabled):
                             new_lines.append({"text": l_t, "size": l_s, "color": l_c})
                     sec['lines'] = new_lines
                     if st.button("➕ 문구 줄 추가", key=f"la_{shared_store['current_page']}_{s_idx}"):
-                        sec['lines'].append({"text": "새로운 문구", "size": 22, "color": "#1e293b"}); st.rerun()
+                        sec['lines'].append({"text": "새로운 문구", "size": 22, "color": "#1e293b"})
+                        st.rerun()
                 else:
                     for line in sec.get('lines', []):
                         st.markdown(f'<p class="text-line" style="font-size:{line["size"]}px; color:{line["color"]}; font-weight:bold;">{line["text"]}</p>', unsafe_allow_html=True)
 
+            # --- [우측 영역] 사이드 지표 및 보조 그림 ---
             with col_side:
                 sec.setdefault('side_items', [])
                 if edit_enabled:
                     sc1, sc2 = st.columns(2)
                     if sc1.button("📊 지표/글자 추가", key=f"am_{shared_store['current_page']}_{s_idx}"): 
-                        sec['side_items'].append({"type":"metric", "label":"항목", "value":"0", "color":"#007bff", "label_fs": 14, "label_color": "#64748b", "value_fs": 28}); st.rerun()
+                        sec['side_items'].append({"type":"metric", "label":"항목", "value":"0", "color":"#007bff", "label_fs": 14, "label_color": "#64748b", "value_fs": 28})
+                        st.rerun()
                     if sc2.button("🖼️ 그림 추가", key=f"ai_{shared_store['current_page']}_{s_idx}"): 
-                        sec['side_items'].append({"type":"image", "src":None, "width":350}); st.rerun()
+                        sec['side_items'].append({"type":"image", "src":None, "width":350})
+                        st.rerun()
                 
                 for i_idx, item in enumerate(sec['side_items']):
                     if edit_enabled:
                         with st.expander(f"⚙️ {item.get('label', '아이템')} 편집", expanded=True):
                             if st.button("🗑️ 이 아이템 삭제", key=f"sdel_{shared_store['current_page']}_{s_idx}_{i_idx}"): 
-                                sec['side_items'].pop(i_idx); st.rerun()
+                                sec['side_items'].pop(i_idx)
+                                st.rerun()
                             
                             if item['type'] == "metric":
                                 ic1, ic2 = st.columns(2)
                                 item['label'] = ic1.text_input("라벨명", item.get('label', ''), key=f"il_{shared_store['current_page']}_{s_idx}_{i_idx}")
-                                item['value'] = ic2.text_input("수치/내용", item.get('value', ''), key=f"iv_{shared_store['current_page']}_{s_idx}_{i_idx}")
+                                
+                                # [핵심 변경 사항] 엔터키(줄바꿈)를 지원하는 다중 라인 텍스트 입력창
+                                item['value'] = st.text_area("수치/내용 (엔터로 줄바꿈 가능)", item.get('value', ''), height=120, key=f"iv_{shared_store['current_page']}_{s_idx}_{i_idx}")
                                 
                                 ic3, ic4 = st.columns(2)
                                 item['label_fs'] = ic3.number_input("라벨 크기", 10, 60, int(item.get('label_fs', 14)), key=f"ilfs_{shared_store['current_page']}_{s_idx}_{i_idx}")
@@ -376,13 +443,17 @@ def main_content_area(edit_enabled):
                                 item['width'] = st.slider("사이드 그림 너비", 100, 500, int(item.get('width', 350)), key=f"siw_{shared_store['current_page']}_{s_idx}_{i_idx}")
                     
                     if item['type'] == "metric":
+                        # [핵심 변경 사항] 사용자가 입력한 엔터(\n)를 HTML 줄바꿈(<br>)으로 변환하여 화면에 렌더링
+                        formatted_value = item.get('value', '').replace('\n', '<br>')
+                        
                         html = f"""
                         <div class="side-slot-card">
-                            <div style="font-size:{item.get('label_fs', 14)}px; color:{item.get('label_color', '#64748b')}; margin-bottom:6px;">{item.get('label', '')}</div>
-                            <div style="font-size:{item.get('value_fs', 28)}px; font-weight:bold; color:{item.get('color', '#007bff')}; line-height:1.2;">{item.get('value', '')}</div>
+                            <div style="font-size:{item.get('label_fs', 14)}px; color:{item.get('label_color', '#64748b')}; margin-bottom:8px;">{item.get('label', '')}</div>
+                            <div style="font-size:{item.get('value_fs', 28)}px; font-weight:bold; color:{item.get('color', '#007bff')}; line-height:1.5;">{formatted_value}</div>
                         </div>
                         """
                         st.markdown(html, unsafe_allow_html=True)
+                        
                     elif item['type'] == "image" and item.get('src'):
                         html = f"""
                         <div class="side-slot-card">
@@ -391,4 +462,5 @@ def main_content_area(edit_enabled):
                         """
                         st.markdown(html, unsafe_allow_html=True)
 
+# 실행부
 main_content_area(edit_mode)
