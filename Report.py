@@ -25,7 +25,7 @@ shared_store = get_global_store()
 def sync_user_id():
     js_code = """
     <script>
-    const storageKey = 'posco_uid_final_v5';
+    const storageKey = 'posco_uid_final_v6';
     let uid = localStorage.getItem(storageKey);
     if (!uid) {
         uid = 'u_' + Math.random().toString(36).substr(2, 9);
@@ -41,7 +41,6 @@ def sync_user_id():
     components.html(js_code, height=0)
 
 browser_uid = st.query_params.get("uid")
-
 if "user_label" not in st.session_state:
     if browser_uid:
         if browser_uid in shared_store["user_labels"]:
@@ -121,13 +120,6 @@ with st.sidebar:
         agora_voice_component(app_id=agora_id, channel=shared_store["voice_channel"], role="reporter" if is_reporter else "audience")
     except: st.warning("⚠️ Agora ID 설정 필요")
 
-    with st.expander(f"👥 참여자 명단 ({len(shared_store['user_labels']) + 1}명)", expanded=False):
-        st.write(f"- {'**📢 보고자 (나)**' if is_reporter else '📢 보고자'}")
-        for label in shared_store["user_labels"].values():
-            if not is_reporter and label == st.session_state.user_label:
-                st.write(f"- **👤 {label} (나)**")
-            else: st.write(f"- 👤 {label}")
-
     if is_reporter:
         st.divider()
         if st.button("🚨 시스템 전체 초기화", use_container_width=True):
@@ -138,10 +130,14 @@ with st.sidebar:
         if uploaded_file:
             content = json.loads(uploaded_file.read().decode("utf-8"))
             if shared_store["report_data"] is None:
-                # 초기 가시성 설정 주입
+                # 초기 제어 데이터 주입
                 for p in content['pages']:
-                    if 'show_img' not in p: p['show_img'] = True
-                    if 'show_txt' not in p: p['show_txt'] = True
+                    p.setdefault('show_p', True)
+                    p.setdefault('show_img', True)
+                    p.setdefault('show_txt', True)
+                    if 'metrics' in p:
+                        for m in p['metrics']:
+                            if len(m) < 4: m.append(True) # index 3에 가시성 플래그 추가
                 shared_store["report_data"] = content
                 shared_store["sync_version"] += 1
         current_edit_mode = st.toggle("📝 실시간 편집 모드", value=False)
@@ -149,11 +145,11 @@ with st.sidebar:
 # 4. [동기화 엔진]
 @st.fragment(run_every="1s")
 def sync_content_area(edit_enabled):
-    with st.expander("💬 실시간 채팅 및 소통", expanded=True):
+    with st.expander("💬 실시간 채팅", expanded=True):
         c_col, i_col = st.columns([4, 1])
         with i_col:
             chat_sender = "📢 보고자" if is_reporter else f"👤 {st.session_state.user_label}"
-            chat_input = st.text_input("메시지", key="chat_in", label_visibility="collapsed", placeholder="입력...")
+            chat_input = st.text_input("메시지", key="chat_in", label_visibility="collapsed")
             if st.button("전송", use_container_width=True):
                 if chat_input:
                     shared_store["chat_logs"].insert(0, f"[{time.strftime('%H:%M:%S')}] **{chat_sender}**: {chat_input}")
@@ -166,48 +162,43 @@ def sync_content_area(edit_enabled):
         return
 
     data = shared_store["report_data"]
-    tab_labels = [f"P{i+1}. {p.get('tab', '')}" for i, p in enumerate(data['pages'])]
+    
+    # [기능] 전체 탭 중 가시성이 True인 것만 추출 (단, 보고자는 편집을 위해 모두 봄)
+    visible_indices = [i for i, p in enumerate(data['pages']) if p.get('show_p', True) or is_reporter]
+    tab_labels = {i: f"P{i+1}. {p.get('tab', '')}" + (" (숨김)" if not p.get('show_p', True) else "") for i, p in enumerate(data['pages'])}
     
     if is_reporter:
-        current_tab_idx = st.radio("📑 페이지 이동", range(len(tab_labels)), index=shared_store["current_page"] if shared_store["current_page"] < len(tab_labels) else 0, format_func=lambda x: tab_labels[x], horizontal=True)
+        current_tab_idx = st.radio("📑 페이지 이동", list(tab_labels.keys()), index=shared_store["current_page"], format_func=lambda x: tab_labels[x], horizontal=True)
         if shared_store["current_page"] != current_tab_idx:
             shared_store["current_page"] = current_tab_idx
             shared_store["sync_version"] += 1
     else:
         current_tab_idx = shared_store["current_page"]
-        if current_tab_idx >= len(tab_labels): current_tab_idx = 0
-        st.warning(f"📍 현재 브리핑 위치: **{tab_labels[current_tab_idx]}**")
+        if not data['pages'][current_tab_idx].get('show_p', True):
+            st.error("🚫 보고자가 이 페이지를 숨겼습니다. 다음 안내를 기다려주세요.")
+            return
 
-    # --- 본문 영역 ---
     p = data['pages'][current_tab_idx]
     st.divider()
     
-    # 보고자 편집 모드: 노출 제어 스위치
     if is_reporter and edit_enabled:
-        col_e1, col_e2, col_e3 = st.columns(3)
-        with col_e1:
-            p['show_img'] = st.checkbox("🖼️ 그림 표시", value=p.get('show_img', True), key=f"si_{current_tab_idx}")
-        with col_e2:
-            p['show_txt'] = st.checkbox("📄 본문 표시", value=p.get('show_txt', True), key=f"st_{current_tab_idx}")
-        with col_e3:
-            if st.button("💾 현재 상태 JSON 저장"):
-                shared_store["sync_version"] += 1
+        st.subheader("👁️ 섹션 가시성 제어")
+        c1, c2, c3 = st.columns(3)
+        with c1: p['show_p'] = st.checkbox("📑 페이지(탭) 표시", value=p.get('show_p', True), key=f"sp_{current_tab_idx}")
+        with c2: p['show_img'] = st.checkbox("🖼️ 그림 표시", value=p.get('show_img', True), key=f"si_{current_tab_idx}")
+        with c3: p['show_txt'] = st.checkbox("📄 본문 표시", value=p.get('show_txt', True), key=f"st_{current_tab_idx}")
+        shared_store["sync_version"] += 1
 
     col_main, col_side = st.columns([2, 1], gap="large")
     
     with col_main:
         if is_reporter and edit_enabled:
-            p['tab'] = st.text_input("🔖 탭 이름 수정", p.get('tab', ''), key=f"t_{current_tab_idx}")
             p['header'] = st.text_input("📌 제목 수정", p.get('header', ''), key=f"h_{current_tab_idx}")
             p['content'] = st.text_area("📄 본문 수정", p.get('content', ''), height=200, key=f"c_{current_tab_idx}")
             shared_store["sync_version"] += 1
         
         st.markdown(f"# {p.get('header', '')}")
-        
-        # [기능 구현] 가시성 조건부 렌더링
-        if p.get('show_img', True) and "image" in p: 
-            st.image(p["image"], width=800)
-        
+        if p.get('show_img', True) and "image" in p: st.image(p["image"], width=800)
         if p.get('show_txt', True):
             for para in p.get('content', '').split('\n'):
                 if para.strip(): st.markdown(f"### **{para.strip()}**")
@@ -216,10 +207,14 @@ def sync_content_area(edit_enabled):
         st.subheader(p.get('metrics_title', '📊 지표'))
         if "metrics" in p:
             for idx, m in enumerate(p['metrics']):
+                # m[3]이 가시성 플래그
                 if is_reporter and edit_enabled:
+                    m[3] = st.toggle(f"지표 {idx+1} 노출", value=m[3], key=f"mtog_{current_tab_idx}_{idx}")
                     m[0] = st.text_input(f"라벨{idx}", m[0], key=f"ml_{idx}")
                     m[1] = st.text_input(f"수치{idx}", m[1], key=f"mv_{idx}")
-                st.metric(label=m[0], value=m[1])
+                
+                if m[3] or is_reporter: # 보고자는 숨겨진 지표도 희미하게 볼 수 있게 처리 가능
+                    st.metric(label=m[0] + (" (숨김)" if not m[3] else ""), value=m[1])
 
 # 실행
 sync_content_area(current_edit_mode if is_reporter else False)
