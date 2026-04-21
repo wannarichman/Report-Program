@@ -4,31 +4,36 @@ import json
 import time
 import base64
 
-# 1. 페이지 설정 및 디자인 (네이티브 컨테이너 디자인 오버라이딩)
+# 1. 페이지 설정 및 프리미엄 디자인 프레임워크 (CSS 전면 개편)
 st.set_page_config(page_title="POSCO E&C AI Live Sync Master", layout="wide")
 
 st.markdown("""
     <style>
-    /* 전체 배경을 연한 회색으로 */
-    .stApp { background-color: #f4f7f9; }
+    /* 1. 앱 전체 배경을 차분한 파스텔톤으로 눌러서 흰색 카드가 돋보이게 함 */
+    [data-testid="stAppViewContainer"] {
+        background-color: #eef2f6 !important;
+    }
     
-    /* [핵심 수정] Streamlit의 네이티브 테두리 컨테이너를 완벽한 '흰색 카드'로 변신시킴 */
-    div[data-testid="stVerticalBlockBorderWrapper"] {
+    /* 2. 메인 화면의 컨테이너를 완벽한 '독립된 고급 카드'로 변신 (얇은 선 제거, 상단 포인트, 그림자 추가) */
+    .main [data-testid="stVerticalBlockBorderWrapper"] {
         background-color: #ffffff !important;
-        border: 2px solid #e1e4e8 !important;
-        border-radius: 20px !important;
-        padding: 20px;
-        box-shadow: 0 8px 24px rgba(0,0,0,0.06) !important;
-        margin-bottom: 10px;
+        border: none !important; 
+        border-top: 7px solid #005ab5 !important; /* 포스코 톤의 블루 포인트 라인 */
+        border-radius: 16px !important;
+        padding: 35px 40px !important;
+        box-shadow: 0 12px 40px rgba(0,0,0,0.08) !important; /* 부드럽고 깊은 그림자 */
+        margin-bottom: 60px !important; /* 섹션 간 간격 대폭 확대 */
     }
     
-    /* 사이드 지표 슬롯용 미니 카드 */
+    /* 3. 사이드 지표 슬롯: 메인 텍스트와 대비되는 부드러운 배경색 */
     .side-slot-card {
-        background-color: #fcfdfe; padding: 15px; border-radius: 12px;
-        border: 1px solid #e9ecef; border-left: 6px solid #007bff; margin-bottom: 12px;
+        background-color: #f8fafc; padding: 20px; border-radius: 14px;
+        border: 1px solid #edf2f7; border-left: 6px solid #3b82f6; margin-bottom: 16px;
     }
-    .text-line { white-space: pre-wrap; word-wrap: break-word; line-height: 1.8; margin-bottom: 12px; }
-    .voice-panel { background: #ffffff; border: 1px solid #dee2e6; padding: 15px; border-radius: 20px; text-align: center; }
+    
+    /* 글자 및 기타 요소 스타일링 */
+    .text-line { white-space: pre-wrap; word-wrap: break-word; line-height: 1.8; margin-bottom: 10px; color: #334155; }
+    .voice-panel { background: #ffffff; border: 1px solid #e2e8f0; padding: 15px; border-radius: 16px; text-align: center; box-shadow: 0 4px 6px rgba(0,0,0,0.02); }
     </style>
     """, unsafe_allow_html=True)
 
@@ -47,7 +52,7 @@ shared_store = get_global_store()
 def create_empty_page():
     return {
         "tab": "새 페이지", "header": "제목을 입력하세요", "header_fs": 45, "header_color": "#1a1c1e",
-        "sections": [{"title": "새로운 분석 섹션", "lines": [{"text": "내용을 입력하세요", "size": 22, "color": "#000000"}], "main_image": None, "side_items": []}]
+        "sections": [{"title": "새로운 분석 섹션", "lines": [{"text": "내용을 입력하세요", "size": 22, "color": "#1e293b"}], "main_image": None, "side_items": []}]
     }
 
 def adapt_json_format(raw_data):
@@ -65,8 +70,8 @@ def agora_voice_system(app_id, channel, user_label):
     custom_html = f"""
     <script src="https://download.agora.io/sdk/release/AgoraRTC_N-4.11.0.js"></script>
     <div class="voice-panel">
-        <div id="v-status" style="font-size: 13px; font-weight: 700; margin-bottom: 8px;">🎙️ Live Sync Audio</div>
-        <div style="width: 100%; height: 10px; background: #e9ecef; border-radius: 5px; margin-bottom: 10px; overflow: hidden;">
+        <div id="v-status" style="font-size: 13px; font-weight: 700; margin-bottom: 8px; color:#1e293b;">🎙️ Live Sync Audio</div>
+        <div style="width: 100%; height: 10px; background: #e2e8f0; border-radius: 5px; margin-bottom: 10px; overflow: hidden;">
             <div id="level-bar" style="width: 0%; height: 100%; background: #28a745; transition: width 0.05s;"></div>
         </div>
         <button id="join" style="padding: 8px 16px; background: #007bff; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold;">🔊 연결</button>
@@ -88,7 +93,7 @@ def agora_voice_system(app_id, channel, user_label):
         document.getElementById("join").onclick = join;
     </script>
     """
-    components.html(custom_html, height=130)
+    components.html(custom_html, height=140)
 
 # --- 사이드바 ---
 with st.sidebar:
@@ -105,7 +110,7 @@ with st.sidebar:
         st.divider()
         uploaded_file = st.file_uploader("📂 JSON 로드", type=['json'])
         
-        # [안전성 유지] 데이터 무한 덮어쓰기 방지
+        # [버그 수정 유지] 파일 로드 시 무한 초기화 방지
         if uploaded_file:
             if st.session_state.get("last_uploaded_id") != uploaded_file.file_id:
                 shared_store["report_data"] = adapt_json_format(json.loads(uploaded_file.read().decode("utf-8")))
@@ -130,23 +135,22 @@ def main_content_area(edit_enabled):
         msg = c1.text_input("메시지", key="chat_in", label_visibility="collapsed")
         if c2.button("전송") and msg: shared_store["chat_history"].append(f"**{my_label}**: {msg}")
         chat_box = "".join([f"<div style='margin-bottom:6px;'>{m}</div>" for m in shared_store["chat_history"][-10:]])
-        st.markdown(f"<div style='height:120px; overflow-y:auto; background:#f8f9fa; padding:12px; border-radius:10px;'>{chat_box}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='height:120px; overflow-y:auto; background:#ffffff; padding:12px; border-radius:10px; border:1px solid #e2e8f0;'>{chat_box}</div>", unsafe_allow_html=True)
 
     if shared_store["report_data"] is None:
-        st.markdown("<div style='text-align:center; padding:150px; color:#6c757d;'><h2>📂 리포트가 초기화되었습니다.</h2></div>", unsafe_allow_html=True)
+        st.markdown("<div style='text-align:center; padding:150px; color:#64748b;'><h2>📂 리포트가 초기화되었습니다.</h2></div>", unsafe_allow_html=True)
         if edit_enabled and st.button("📄 완전히 새로운 보고서 시작하기"):
             shared_store["report_data"] = {"pages": [create_empty_page()]}; st.rerun()
         return
 
     data = shared_store["report_data"]
     
-    # [인덱스 안전 보장]
+    # [인덱스 에러 방지 유지]
     if shared_store["current_page"] >= len(data['pages']):
         shared_store["current_page"] = max(0, len(data['pages']) - 1)
 
     p = data['pages'][shared_store["current_page"]]
     
-    # 페이지 및 탭 관리
     if edit_enabled:
         st.write("---")
         pc1, pc2 = st.columns([1, 5])
@@ -170,17 +174,16 @@ def main_content_area(edit_enabled):
             p['header_fs'] = c1.slider("제목 크기", 10, 150, int(p.get('header_fs', 45)))
             p['header_color'] = c2.color_picker("제목 색상", p.get('header_color', '#1a1c1e'))
 
-    st.markdown(f'<h1 style="text-align:center; font-size:{p.get("header_fs", 45)}px; color:{p.get("header_color", "#1a1c1e")};">{p.get("header")}</h1>', unsafe_allow_html=True)
-    st.divider()
+    st.markdown(f'<h1 style="text-align:center; font-size:{p.get("header_fs", 45)}px; color:{p.get("header_color", "#1a1c1e")}; padding-bottom:20px;">{p.get("header")}</h1>', unsafe_allow_html=True)
 
-    # --- [섹션 루프] ---
+    # --- [섹션 루프: 프리미엄 카드 디자인 적용] ---
     sections = p.setdefault('sections', [])
-    if edit_enabled and st.button("➕ 새로운 세로 섹션 뭉치 추가", key=f"add_sec_{shared_store['current_page']}"):
-        sections.append({"title": "새 섹션", "lines": [{"text": "내용", "size": 22, "color": "#000000"}], "main_image": None, "side_items": []})
+    if edit_enabled and st.button("➕ 새로운 세로 섹션 카드 추가", key=f"add_sec_{shared_store['current_page']}"):
+        sections.append({"title": "새 섹션", "lines": [{"text": "내용", "size": 22, "color": "#1e293b"}], "main_image": None, "side_items": []})
         st.rerun()
 
     for s_idx, sec in enumerate(sections):
-        # [핵심 수정] 억지 HTML 껍데기 제거하고 Streamlit 네이티브 컨테이너 사용
+        # [핵심] 얇은 선이 아닌, CSS가 입혀진 '고급 카드' 컨테이너가 생성됩니다.
         with st.container(border=True): 
             col_main, col_side = st.columns([2.5, 1], gap="large")
             
@@ -210,7 +213,7 @@ def main_content_area(edit_enabled):
                             new_lines.append({"text": l_t, "size": l_s, "color": l_c})
                     sec['lines'] = new_lines
                     if st.button("➕ 문구 줄 추가", key=f"la_{shared_store['current_page']}_{s_idx}"):
-                        sec['lines'].append({"text": "새로운 문구", "size": 22, "color": "#000000"}); st.rerun()
+                        sec['lines'].append({"text": "새로운 문구", "size": 22, "color": "#1e293b"}); st.rerun()
                 else:
                     for line in sec.get('lines', []):
                         st.markdown(f'<p class="text-line" style="font-size:{line["size"]}px; color:{line["color"]}; font-weight:bold;">{line["text"]}</p>', unsafe_allow_html=True)
@@ -236,7 +239,7 @@ def main_content_area(edit_enabled):
                             item['width'] = st.slider("너비", 100, 500, int(item.get('width', 350)), key=f"siw_{shared_store['current_page']}_{s_idx}_{i_idx}")
                     
                     if item['type'] == "metric":
-                        st.markdown(f"<small>{item['label']}</small><div style='font-size:26px; font-weight:bold; color:{item.get('color', '#007bff')};'>{item['value']}</div>", unsafe_allow_html=True)
+                        st.markdown(f"<small style='color:#64748b;'>{item['label']}</small><div style='font-size:28px; font-weight:bold; color:{item.get('color', '#007bff')};'>{item['value']}</div>", unsafe_allow_html=True)
                     elif item['type'] == "image" and item.get('src'):
                         st.image(item['src'], width=int(item.get('width', 350)))
                     st.markdown('</div>', unsafe_allow_html=True)
