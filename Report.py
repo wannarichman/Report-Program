@@ -6,24 +6,24 @@ import time
 # 1. 페이지 설정
 st.set_page_config(page_title="POSCO E&C AI Live Sync", layout="wide")
 
-# 2. [전역 공유 저장소]
+# 2. [전역 공유 저장소] 음성 연결 상태 추가
 @st.cache_resource
 def get_global_store():
     return {
         "report_data": None,
         "current_page": 0,
         "active_users": 0,
-        "sync_version": 0
+        "sync_version": 0,
+        "is_voice_live": False  # 보고자의 음성 연결 여부
     }
 
 shared_store = get_global_store()
 
-# 접속자 수 관리
 if "user_counted" not in st.session_state:
     shared_store["active_users"] += 1
     st.session_state.user_counted = True
 
-# 3. 음성 설정 (사이드바 고정)
+# 3. 음성 설정
 RTC_CONFIG = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
 
 with st.sidebar:
@@ -31,63 +31,66 @@ with st.sidebar:
     is_reporter = st.toggle("🔑 보고자 권한 활성화", value=False)
     st.success(f"👥 접속: **{shared_store['active_users']}명**")
     
-    # 음성 스트리머 (본문 갱신과 분리되어 끊김 없음)
-    webrtc_streamer(
-        key="posco-v-final-audio-v3",
+    # [핵심] 음성 연결 감지 로직
+    webrtc_ctx = webrtc_streamer(
+        key="posco-v-final-audio-sync",
         mode=WebRtcMode.SENDRECV,
         rtc_configuration=RTC_CONFIG,
         media_stream_constraints={"video": False, "audio": True},
     )
 
+    # 보고자가 START를 누르면 전역 상태 변경
+    if is_reporter:
+        if webrtc_ctx.state.playing != shared_store["is_voice_live"]:
+            shared_store["is_voice_live"] = webrtc_ctx.state.playing
+            shared_store["sync_version"] += 1
+
     if st.button("🚨 시스템 전체 초기화"):
         shared_store["report_data"] = None
+        shared_store["is_voice_live"] = False
         shared_store["sync_version"] += 1
         st.cache_resource.clear()
         st.rerun()
 
-    # 보고자 컨트롤러
-    current_edit_mode = False
     if is_reporter:
         st.divider()
         st.subheader("📂 보고자 컨트롤")
         uploaded_file = st.file_uploader("보고서 JSON 업로드", type=['json', 'js'], key="report_uploader")
-        
-        if uploaded_file is not None:
+        if uploaded_file:
             try:
                 new_content = json.loads(uploaded_file.read().decode("utf-8"))
                 if shared_store["report_data"] is None:
                     shared_store["report_data"] = new_content
                     shared_store["sync_version"] += 1
-            except Exception as e:
-                st.error(f"파일 오류: {e}")
-        
+            except: st.error("파일 오류")
         current_edit_mode = st.toggle("📝 실시간 편집 모드", value=False)
 
-# 4. [동기화 엔진] 탭 제목 수정을 포함한 본문 갱신
+# 4. [동기화 엔진] 음성 알림 및 본문 갱신
 @st.fragment(run_every="1s")
 def sync_content_area(edit_enabled):
+    # [음성 호출 기능] 보고자가 음성을 켰을 때 보고받는 자에게 알림 표시
+    if not is_reporter and shared_store["is_voice_live"]:
+        st.toast("📢 보고자가 음성 브리핑을 시작했습니다!")
+        with st.expander("🔊 **음성 브리핑 참여 요청**", expanded=True):
+            st.warning("보고자의 음성이 송출 중입니다. 사이드바의 [START] 버튼을 눌러 연결하세요.")
+
     if shared_store["report_data"] is None:
         st.info("🛰️ 보고자의 보고서 업로드를 기다리는 중입니다...")
         return
 
     data = shared_store["report_data"]
-    
-    # [수정] 실시간으로 반영된 탭 이름을 가져와서 레이블 생성
     tab_labels = [f"P{i+1}. {p.get('tab', '')}" for i, p in enumerate(data['pages'])]
     
-    # --- 페이지 이동 로직 ---
     if is_reporter:
         col_ctrl, col_save = st.columns([4, 1])
         with col_ctrl:
             prev_p = shared_store["current_page"]
-            # 탭 이동 컨트롤
             current_tab_idx = st.radio("📑 페이지 이동", range(len(tab_labels)), 
                                        index=shared_store["current_page"],
                                        format_func=lambda x: tab_labels[x], horizontal=True)
             if prev_p != current_tab_idx:
                 shared_store["current_page"] = current_tab_idx
                 shared_store["sync_version"] += 1
-        
         with col_save:
             st.download_button("💾 JSON 저장", json.dumps(data, indent=2, ensure_ascii=False), "updated_report.json")
     else:
@@ -95,27 +98,18 @@ def sync_content_area(edit_enabled):
         if current_tab_idx >= len(tab_labels): current_tab_idx = 0
         st.warning(f"📍 현재 브리핑 위치: **{tab_labels[current_tab_idx]}**")
 
-    # --- 본문 출력 및 실시간 편집 ---
+    # 본문 및 편집 영역
     p = data['pages'][current_tab_idx]
     st.divider()
     col_main, col_side = st.columns([2, 1], gap="large")
     
     with col_main:
         if is_reporter and edit_enabled:
-            # 1. 탭 이름 수정 (P1, P2 등 표시 텍스트)
-            new_tab_name = st.text_input("🔖 탭 이름 수정 (P1, P2...)", p.get('tab', ''), key=f"edit_t_{current_tab_idx}")
-            if new_tab_name != p.get('tab'):
-                p['tab'] = new_tab_name
-                shared_store["sync_version"] += 1
-
-            # 2. 제목 및 본문 편집
+            p['tab'] = st.text_input("🔖 탭 이름 수정", p.get('tab', ''), key=f"edit_t_{current_tab_idx}")
             p['header'] = st.text_input("📌 제목 수정", p.get('header', ''), key=f"edit_h_{current_tab_idx}")
             p['content'] = st.text_area("📄 본문 수정", p.get('content', ''), height=250, key=f"edit_c_{current_tab_idx}")
-            
-            # 3. 이미지 크기 조절
             if 'img_width' not in p: p['img_width'] = 800
             p['img_width'] = st.slider("🖼️ 그림 크기 조절", 200, 1200, int(p['img_width']), key=f"edit_i_{current_tab_idx}")
-            
             shared_store["sync_version"] += 1
         
         st.markdown(f"# {p.get('header', '')}")
@@ -128,15 +122,13 @@ def sync_content_area(edit_enabled):
         if 'metrics_title' not in p: p['metrics_title'] = "📊 주요 지표"
         if is_reporter and edit_enabled:
             p['metrics_title'] = st.text_input("📊 지표 섹션 제목", p['metrics_title'], key=f"edit_mt_{current_tab_idx}")
-        
         st.subheader(p['metrics_title'])
         if "metrics" in p:
             for idx, m in enumerate(p['metrics']):
                 if is_reporter and edit_enabled:
                     m[0] = st.text_input(f"항목{idx}", m[0], key=f"ml_{current_tab_idx}_{idx}")
                     m[1] = st.text_input(f"수치{idx}", m[1], key=f"mv_{current_tab_idx}_{idx}")
-                    shared_store["sync_version"] += 1
                 st.metric(label=m[0], value=m[1], delta=m[2] if len(m)>2 else None)
 
 # 실행
-sync_content_area(current_edit_mode)
+sync_content_area(current_edit_mode if is_reporter else False)
