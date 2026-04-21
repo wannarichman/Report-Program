@@ -4,10 +4,10 @@ import json
 import time
 import base64
 
-# 1. 페이지 설정 및 전역 스타일
+# 1. 페이지 설정
 st.set_page_config(page_title="POSCO E&C AI Live Sync vFinal", layout="wide")
 
-# 2. [전역 저장소] 모든 기능의 실시간 데이터 소스
+# 2. [전역 저장소] 
 @st.cache_resource
 def get_global_store():
     return {
@@ -22,11 +22,11 @@ def get_global_store():
 
 shared_store = get_global_store()
 
-# --- [재접속 식별 로직: 참여자 번호 고정] ---
+# [ID 동기화 로직]
 def sync_user_id():
     js_code = """
     <script>
-    const storageKey = 'posco_uid_ultimate_vFinal';
+    const storageKey = 'posco_uid_final_ultimate_v5';
     let uid = localStorage.getItem(storageKey);
     if (!uid) {
         uid = 'u_' + Math.random().toString(36).substr(2, 9);
@@ -41,9 +41,8 @@ def sync_user_id():
     """
     components.html(js_code, height=0)
 
-# 참여자 식별 프로세스
-browser_uid = st.query_params.get("uid")
 if "user_label" not in st.session_state:
+    browser_uid = st.query_params.get("uid")
     if browser_uid:
         if browser_uid in shared_store["user_labels"]:
             st.session_state.user_label = shared_store["user_labels"][browser_uid]
@@ -55,14 +54,14 @@ if "user_label" not in st.session_state:
         sync_user_id()
         st.session_state.user_label = "식별 중..."
 
-# 3. [Agora 실시간 음성 채널 컴포넌트]
+# 3. [음성 컴포넌트]
 def agora_voice_component(app_id, channel, role, user_label):
     custom_html = f"""
     <script src="https://download.agora.io/sdk/release/AgoraRTC_N-4.11.0.js"></script>
     <div style="padding: 10px; background: #f8f9fa; border-radius: 12px; border: 1px solid #dee2e6; text-align: center;">
         <p style="margin: 0 0 5px 0; font-size: 14px; font-weight: 600;">🎙️ 실시간 음성 브리핑</p>
-        <button id="join" style="padding: 8px 15px; cursor: pointer; border-radius: 6px; border: none; background: #007bff; color: white;">🔊 연결</button>
-        <button id="leave" style="padding: 8px 15px; cursor: pointer; border-radius: 6px; border: none; background: #dc3545; color: white; display: none;">종료</button>
+        <button id="join" style="padding: 8px 15px; border-radius: 6px; border: none; background: #007bff; color: white;">🔊 연결</button>
+        <button id="leave" style="padding: 8px 15px; border-radius: 6px; border: none; background: #dc3545; color: white; display: none;">종료</button>
     </div>
     <script>
         let client = AgoraRTC.createClient({{ mode: "rtc", codec: "vp8" }});
@@ -90,7 +89,7 @@ def agora_voice_component(app_id, channel, role, user_label):
     """
     components.html(custom_html, height=120)
 
-# --- 사이드바: 관리 및 데이터 제어 ---
+# --- 사이드바 ---
 with st.sidebar:
     st.title("🎙️ AI Live Sync")
     is_reporter = st.toggle("🔑 보고자 권한 활성화", value=False)
@@ -105,8 +104,7 @@ with st.sidebar:
     if is_reporter:
         st.divider()
         if shared_store["report_data"]:
-            # [기능 유지] 편집된 내용 저장 (Export)
-            st.download_button("📥 현재 편집본 JSON 저장", data=json.dumps(shared_store["report_data"], indent=4, ensure_ascii=False), file_name="final_sync_report.json", mime="application/json", use_container_width=True)
+            st.download_button("📥 편집본 JSON 저장", data=json.dumps(shared_store["report_data"], indent=4, ensure_ascii=False), file_name="posco_sync_final.json", mime="application/json", use_container_width=True)
         if st.button("🚨 시스템 초기화", use_container_width=True):
             shared_store.update({"report_data": None, "chat_logs": [], "user_labels": {}})
             st.cache_resource.clear(); st.rerun()
@@ -121,19 +119,8 @@ with st.sidebar:
 @st.fragment(run_every="1s")
 def sync_content_area(edit_enabled):
     # 상단 접속자 정보
-    st.markdown(f"🎙️ **참여 중인 음성 명단:** {', '.join(shared_store['voice_active_users']) if shared_store['voice_active_users'] else '대기 중...'}")
+    st.markdown(f"🎙️ **음성 채널 참여자:** {', '.join(shared_store['voice_active_users']) if shared_store['voice_active_users'] else '대기 중...'}")
     
-    with st.expander("💬 실시간 채팅", expanded=True):
-        c_col, i_col = st.columns([4, 1])
-        with i_col:
-            chat_input = st.text_input("채팅", key="chat_in", label_visibility="collapsed")
-            if st.button("전송", use_container_width=True):
-                if chat_input:
-                    shared_store["chat_logs"].insert(0, f"[{time.strftime('%H:%M:%S')}] **{my_label}**: {chat_input}")
-                    shared_store["sync_version"] += 1
-        with c_col:
-            for log in shared_store["chat_logs"][:2]: st.write(log)
-
     if shared_store["report_data"] is None:
         st.warning("🛰️ 리포트 데이터를 대기 중입니다...")
         return
@@ -141,99 +128,142 @@ def sync_content_area(edit_enabled):
     data = shared_store["report_data"]
     p = data['pages'][shared_store["current_page"]]
 
-    # 상단 페이지 동기화
+    # 상단 탭 관리 및 음성 참여자 관리
     if is_reporter:
         tab_labels = {i: f"P{i+1}. {pg.get('tab', '')}" for i, pg in enumerate(data['pages'])}
         current_idx = st.radio("📑 페이지 이동", list(tab_labels.keys()), index=shared_store["current_page"], format_func=lambda x: tab_labels[x], horizontal=True)
         if shared_store["current_page"] != current_idx:
             shared_store["current_page"] = current_idx; shared_store["sync_version"] += 1
+        
         if edit_enabled:
-            # 음성 참여자 관리 (에러 해결: 메인 영역 내로 이동)
             shared_store["voice_active_users"] = st.multiselect("🎙️ 음성 참여자 명단 관리", options=["📢 보고자"] + [f"👤 참여자 {i+1}" for i in range(len(shared_store['user_labels']))], default=shared_store["voice_active_users"])
             p['tab'] = st.text_input("🔖 탭 이름 수정", p.get('tab', ''), key=f"t_ed_{shared_store['current_page']}")
 
     st.divider()
     col_main, col_side = st.columns([2, 1], gap="large")
 
-    # --- [중앙 본문 영역] ---
+    # --- [중앙 본문 및 하단 무한 확장 영역] ---
     with col_main:
+        # 본문 제목 및 크기
         if edit_enabled:
             c1, c2 = st.columns([4, 1])
             p['header'] = c1.text_input("📌 대제목", p.get('header', ''), key=f"h_in_{shared_store['current_page']}")
             p['header_fs'] = c2.number_input("크기", 20, 120, int(p.get('header_fs', 40)), key=f"h_fs_{shared_store['current_page']}")
         st.markdown(f'<h1 style="font-size:{p.get("header_fs", 40)}px;">{p.get("header")}</h1>', unsafe_allow_html=True)
 
+        # 본문 이미지 업로드
         if edit_enabled:
             with st.container(border=True):
-                img_f = st.file_uploader("🖼️ 본문 이미지 직접 업로드", type=['png', 'jpg'], key=f"img_up_{shared_store['current_page']}")
+                img_f = st.file_uploader("🖼️ 이미지 업로드", type=['png', 'jpg'], key=f"img_up_{shared_store['current_page']}")
                 if img_f: p['image'] = f"data:image/png;base64,{base64.b64encode(img_f.getvalue()).decode()}"
-                p['img_width'] = st.slider("이미지 너비", 100, 1000, int(p.get('img_width', 600)))
-        
+                p['img_width'] = st.slider("너비 조절", 100, 1000, int(p.get('img_width', 600)))
         if p.get('image'): st.image(p['image'], width=int(p.get('img_width', 600)))
 
-        # [본문 줄 단위 편집]
+        # 본문 문구 편집
         st.write("---")
-        content_lines = p.get('content', '').split('\n')
-        l_fs = p.setdefault('line_fs', [24] * len(content_lines))
-        while len(l_fs) < len(content_lines): l_fs.append(24)
+        c_lines = p.get('content', '').split('\n')
+        c_l_fs = p.setdefault('line_fs', [24] * len(c_lines))
+        while len(c_l_fs) < len(c_lines): c_l_fs.append(24)
         
-        new_l, new_f = [], []
-        for i, (line, fs) in enumerate(zip(content_lines, l_fs)):
+        nc_lines, nc_fs = [], []
+        for i, (line, fs) in enumerate(zip(c_lines, c_l_fs)):
             if edit_enabled:
                 c1, c2, c3 = st.columns([6, 1.5, 0.5])
-                el = c1.text_input(f"L{i+1}", line, key=f"li_{shared_store['current_page']}_{i}")
+                el = c1.text_input(f"본문 L{i+1}", line, key=f"li_{shared_store['current_page']}_{i}")
                 ef = c2.number_input("크기", 10, 100, int(fs), key=f"lf_{shared_store['current_page']}_{i}")
                 if not c3.button("🗑️", key=f"del_{shared_store['current_page']}_{i}"):
-                    new_l.append(el); new_f.append(ef)
+                    nc_lines.append(el); nc_fs.append(ef)
             else:
-                if line.strip():
-                    st.markdown(f'<p style="font-size:{fs}px; font-weight:bold; margin:0;">{line}</p>', unsafe_allow_html=True)
-        
+                if line.strip(): st.markdown(f'<p style="font-size:{fs}px; font-weight:bold; margin:0;">{line}</p>', unsafe_allow_html=True)
         if edit_enabled:
-            if st.button("➕ 본문 줄 추가"):
-                new_l.append("새 내용"); new_f.append(24)
-            p['content'] = '\n'.join(new_l); p['line_fs'] = new_f; shared_store["sync_version"] += 1
+            if st.button("➕ 본문 줄 추가"): nc_lines.append("새 내용"); nc_fs.append(24)
+            p['content'] = '\n'.join(nc_lines); p['line_fs'] = nc_fs; shared_store["sync_version"] += 1
 
-        # [하단 무한 확장 영역]
+        # [하단 무한 확장 영역 - 제목/내용/그림/크기 조절 통합]
         st.write("---")
         p.setdefault('bottom_sections', [])
         if edit_enabled:
             if st.button("➕ 하단 새로운 섹션 추가"):
-                p['bottom_sections'].append({"header": "하단 섹션 제목", "content": "내용을 입력하세요", "show": True})
+                p['bottom_sections'].append({"header": "추가 섹션", "header_fs": 32, "content": "새로운 내용", "content_fs": 20, "image": None, "img_width": 400})
         
         for idx, bs in enumerate(p['bottom_sections']):
-            if bs.get('show', True) or edit_enabled:
-                with st.container(border=edit_enabled):
-                    if edit_enabled:
-                        c1, c2, c3 = st.columns([4, 1, 1])
-                        bs['header'] = c1.text_input(f"섹션 제목 {idx}", bs['header'], key=f"bh_{idx}")
-                        bs['show'] = c2.checkbox("노출", value=bs.get('show', True), key=f"bsh_{idx}")
-                        if c3.button("🗑️ 삭제", key=f"bdel_{idx}"):
-                            p['bottom_sections'].pop(idx); st.rerun()
-                    st.markdown(f"## {bs['header']}")
-                    if bs.get('content'): st.markdown(bs['content'])
+            with st.container(border=edit_enabled):
+                if edit_enabled:
+                    c1, c2, c3 = st.columns([4, 1, 1])
+                    bs['header'] = c1.text_input(f"섹션 제목 {idx+1}", bs['header'], key=f"bh_{idx}")
+                    bs['header_fs'] = c2.number_input("제목 크기", 10, 80, int(bs.get('header_fs', 32)), key=f"bhfs_{idx}")
+                    if c3.button("🗑️ 삭제", key=f"bdel_{idx}"):
+                        p['bottom_sections'].pop(idx); st.rerun()
+                    
+                    bs['content'] = st.text_area("내용 수정", bs.get('content', ''), key=f"bc_{idx}")
+                    bs['content_fs'] = st.number_input("내용 크기", 10, 60, int(bs.get('content_fs', 20)), key=f"bcfs_{idx}")
+                    
+                    b_img = st.file_uploader(f"섹션 {idx+1} 이미지", type=['png', 'jpg'], key=f"bi_{idx}")
+                    if b_img: bs['image'] = f"data:image/png;base64,{base64.b64encode(b_img.getvalue()).decode()}"
+                    bs['img_width'] = st.slider("이미지 너비", 100, 1000, int(bs.get('img_width', 400)), key=f"biw_{idx}")
+                
+                st.markdown(f'<h2 style="font-size:{bs.get("header_fs", 32)}px;">{bs["header"]}</h2>', unsafe_allow_html=True)
+                if bs.get('image'): st.image(bs['image'], width=int(bs.get('img_width', 400)))
+                st.markdown(f'<p style="font-size:{bs.get("content_fs", 20)}px;">{bs["content"]}</p>', unsafe_allow_html=True)
 
-    # --- [우측 보조 영역] ---
+    # --- [우측 영역 - 지표 및 자유 추가 영역 통합] ---
     with col_side:
         p.setdefault('show_side', True)
         if edit_enabled:
-            with st.container(border=True):
-                st.caption("📊 우측 영역 마스터 제어")
-                p['show_side'] = st.toggle("우측 전체 노출", value=p['show_side'])
-                p.setdefault('metrics_title', '핵심 지표')
-                p['metrics_title'] = st.text_input("지표 섹션 제목", p.get('metrics_title'), key=f"mt_ed_{shared_store['current_page']}")
+            p['show_side'] = st.toggle("📊 우측 영역 노출", value=p['show_side'])
         
         if p['show_side'] or edit_enabled:
+            p.setdefault('metrics_title', '핵심 지표')
+            if edit_enabled:
+                p['metrics_title'] = st.text_input("📊 지표 섹션 제목", p.get('metrics_title'), key=f"mt_ed_{shared_store['current_page']}")
             st.subheader(p.get('metrics_title'))
+            
+            # [지표 편집 및 크기]
             if 'metrics' in p:
                 for idx, m in enumerate(p['metrics']):
                     while len(m) < 4: m.append(True)
                     if edit_enabled:
                         with st.container(border=True):
-                            m[0] = st.text_input(f"라벨 {idx+1}", m[0], key=f"ml_{shared_store['current_page']}_{idx}")
-                            m[1] = st.text_input(f"수치 {idx+1}", m[1], key=f"mv_{shared_store['current_page']}_{idx}")
-                            m[3] = st.toggle("노출", value=m[3], key=f"mt_{shared_store['current_page']}_{idx}")
+                            m[0] = st.text_input(f"라벨 {idx+1}", m[0], key=f"ml_{idx}")
+                            m[1] = st.text_input(f"수치 {idx+1}", m[1], key=f"mv_{idx}")
+                            m[3] = st.toggle("노출", value=m[3], key=f"mt_{idx}")
                     if m[3] or edit_enabled:
                         st.markdown(f'<div style="background:#f1f3f6; padding:12px; border-radius:10px; margin-bottom:10px; border-left:5px solid #007bff;"><p style="font-size:14px; color:#555; margin:0;">{m[0]}</p><p style="font-size:20px; font-weight:bold; margin:0;">{m[1]}</p></div>', unsafe_allow_html=True)
+
+            # [우측 하단 자유 추가 영역 복구]
+            st.divider()
+            p.setdefault('side_title', '추가 정보')
+            if edit_enabled:
+                p['side_title'] = st.text_input("📝 추가 섹션 제목", p.get('side_title'), key=f"st_ed_{shared_store['current_page']}")
+            st.subheader(p.get('side_title'))
+
+            p.setdefault('side_content', ''); p.setdefault('side_line_fs', [])
+            p.setdefault('side_image', None); p.setdefault('side_img_width', 300)
+
+            if edit_enabled:
+                with st.expander("➕ 우측 요소 편집", expanded=True):
+                    s_img = st.file_uploader("🖼️ 우측 이미지 업로드", type=['png', 'jpg'], key=f"si_up_{shared_store['current_page']}")
+                    if s_img: p['side_image'] = f"data:image/png;base64,{base64.b64encode(s_img.getvalue()).decode()}"
+                    p['side_img_width'] = st.slider("너비", 50, 500, int(p.get('side_img_width', 300)))
+                    if st.button("🖼️ 이미지 제거", key=f"si_del"): p['side_image'] = None
+
+            if p.get('side_image'): st.image(p['side_image'], width=int(p.get('side_img_width', 300)))
+
+            s_lines = p.get('side_content', '').split('\n')
+            s_l_fs = p.setdefault('side_line_fs', [18] * len(s_lines))
+            while len(s_l_fs) < len(s_lines): s_l_fs.append(18)
+            
+            ns_lines, ns_fs = [], []
+            for i, (line, fs) in enumerate(zip(s_lines, s_l_fs)):
+                if edit_enabled:
+                    c1, c2, c3 = st.columns([5, 2, 1])
+                    esl = c1.text_input(f"우측 L{i+1}", line, key=f"sli_{shared_store['current_page']}_{i}")
+                    esf = c2.number_input("크기", 10, 60, int(fs), key=f"slf_{shared_store['current_page']}_{i}")
+                    if not c3.button("🗑️", key=f"sdel_{i}"): ns_lines.append(esl); ns_fs.append(esf)
+                else:
+                    if line.strip(): st.markdown(f'<p style="font-size:{fs}px; color:#444; margin:0;">{line}</p>', unsafe_allow_html=True)
+            if edit_enabled:
+                if st.button("➕ 우측 문구 추가"): ns_lines.append("새 내용"); ns_fs.append(18)
+                p['side_content'] = '\n'.join(ns_lines); p['side_line_fs'] = ns_fs; shared_store["sync_version"] += 1
 
 sync_content_area(edit_mode)
