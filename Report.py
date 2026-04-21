@@ -21,11 +21,11 @@ def get_global_store():
 
 shared_store = get_global_store()
 
-# [ID 동기화 로직]
+# --- [ID 동기화 로직] ---
 def sync_user_id():
     js_code = """
     <script>
-    const storageKey = 'posco_uid_final_v6';
+    const storageKey = 'posco_uid_final_v7';
     let uid = localStorage.getItem(storageKey);
     if (!uid) {
         uid = 'u_' + Math.random().toString(36).substr(2, 9);
@@ -126,20 +126,28 @@ with st.sidebar:
             shared_store.update({"report_data": None, "chat_logs": [], "sync_version": shared_store["sync_version"]+1, "active_users": 0, "user_labels": {}})
             st.cache_resource.clear()
             st.rerun()
-        uploaded_file = st.file_uploader("JSON 업로드", type=['json', 'js'])
+        
+        uploaded_file = st.file_uploader("JSON 업로드", type=['json', 'js'], key="uploader")
         if uploaded_file:
-            content = json.loads(uploaded_file.read().decode("utf-8"))
-            if shared_store["report_data"] is None:
-                # 초기 제어 데이터 주입
-                for p in content['pages']:
+            try:
+                content = json.loads(uploaded_file.read().decode("utf-8"))
+                # [IndexError 해결 핵심] 데이터 구조 자동 보정
+                for p in content.get('pages', []):
                     p.setdefault('show_p', True)
                     p.setdefault('show_img', True)
                     p.setdefault('show_txt', True)
                     if 'metrics' in p:
                         for m in p['metrics']:
-                            if len(m) < 4: m.append(True) # index 3에 가시성 플래그 추가
-                shared_store["report_data"] = content
-                shared_store["sync_version"] += 1
+                            # 리스트 길이가 3 이하라면 4번째 자리에 True(표시) 추가
+                            while len(m) < 4:
+                                m.append(True)
+                
+                if shared_store["report_data"] is None:
+                    shared_store["report_data"] = content
+                    shared_store["sync_version"] += 1
+            except Exception as e:
+                st.error(f"JSON 형식 오류: {e}")
+        
         current_edit_mode = st.toggle("📝 실시간 편집 모드", value=False)
 
 # 4. [동기화 엔진]
@@ -162,20 +170,17 @@ def sync_content_area(edit_enabled):
         return
 
     data = shared_store["report_data"]
-    
-    # [기능] 전체 탭 중 가시성이 True인 것만 추출 (단, 보고자는 편집을 위해 모두 봄)
-    visible_indices = [i for i, p in enumerate(data['pages']) if p.get('show_p', True) or is_reporter]
     tab_labels = {i: f"P{i+1}. {p.get('tab', '')}" + (" (숨김)" if not p.get('show_p', True) else "") for i, p in enumerate(data['pages'])}
     
     if is_reporter:
-        current_tab_idx = st.radio("📑 페이지 이동", list(tab_labels.keys()), index=shared_store["current_page"], format_func=lambda x: tab_labels[x], horizontal=True)
+        current_tab_idx = st.radio("📑 페이지 이동", list(tab_labels.keys()), index=shared_store["current_page"] if shared_store["current_page"] < len(data['pages']) else 0, format_func=lambda x: tab_labels[x], horizontal=True)
         if shared_store["current_page"] != current_tab_idx:
             shared_store["current_page"] = current_tab_idx
             shared_store["sync_version"] += 1
     else:
         current_tab_idx = shared_store["current_page"]
         if not data['pages'][current_tab_idx].get('show_p', True):
-            st.error("🚫 보고자가 이 페이지를 숨겼습니다. 다음 안내를 기다려주세요.")
+            st.error("🚫 보고자가 이 페이지를 숨겼습니다.")
             return
 
     p = data['pages'][current_tab_idx]
@@ -184,10 +189,9 @@ def sync_content_area(edit_enabled):
     if is_reporter and edit_enabled:
         st.subheader("👁️ 섹션 가시성 제어")
         c1, c2, c3 = st.columns(3)
-        with c1: p['show_p'] = st.checkbox("📑 페이지(탭) 표시", value=p.get('show_p', True), key=f"sp_{current_tab_idx}")
+        with c1: p['show_p'] = st.checkbox("📑 페이지 표시", value=p.get('show_p', True), key=f"sp_{current_tab_idx}")
         with c2: p['show_img'] = st.checkbox("🖼️ 그림 표시", value=p.get('show_img', True), key=f"si_{current_tab_idx}")
         with c3: p['show_txt'] = st.checkbox("📄 본문 표시", value=p.get('show_txt', True), key=f"st_{current_tab_idx}")
-        shared_store["sync_version"] += 1
 
     col_main, col_side = st.columns([2, 1], gap="large")
     
@@ -207,13 +211,14 @@ def sync_content_area(edit_enabled):
         st.subheader(p.get('metrics_title', '📊 지표'))
         if "metrics" in p:
             for idx, m in enumerate(p['metrics']):
-                # m[3]이 가시성 플래그
                 if is_reporter and edit_enabled:
+                    # m[3] 참조 전 안전 장치 (while 루프로 데이터 보정됨)
                     m[3] = st.toggle(f"지표 {idx+1} 노출", value=m[3], key=f"mtog_{current_tab_idx}_{idx}")
                     m[0] = st.text_input(f"라벨{idx}", m[0], key=f"ml_{idx}")
                     m[1] = st.text_input(f"수치{idx}", m[1], key=f"mv_{idx}")
+                    shared_store["sync_version"] += 1
                 
-                if m[3] or is_reporter: # 보고자는 숨겨진 지표도 희미하게 볼 수 있게 처리 가능
+                if m[3] or is_reporter:
                     st.metric(label=m[0] + (" (숨김)" if not m[3] else ""), value=m[1])
 
 # 실행
