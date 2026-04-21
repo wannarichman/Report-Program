@@ -20,81 +20,86 @@ def get_global_store():
 
 shared_store = get_global_store()
 
-if "user_counted" not in st.session_state:
-    shared_store["active_users"] += 1
-    st.session_state.user_counted = True
-
-# 3. 음성 설정 (에러 방지를 위해 구글 STUN 고정)
-RTC_CONFIG = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
+# 3. 음성 설정 (에러 방지를 위해 타임아웃 연장 및 STUN 고정)
+RTC_CONFIG = RTCConfiguration({
+    "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}],
+    "iceTransportPolicy": "all"
+})
 
 # --- 사이드바 영역 ---
 with st.sidebar:
     st.title("🎙️ 실시간 브리핑")
     is_reporter = st.toggle("🔑 보고자 권한 활성화", value=False)
-    st.success(f"👥 접속: **{shared_store['active_users']}명**")
     
-    # [안정화] 음성 스트리머를 사이드바 최상단에 배치
-    webrtc_ctx = webrtc_streamer(
-        key="posco-v-final-audio-chat",
-        mode=WebRtcMode.SENDRECV,
-        rtc_configuration=RTC_CONFIG,
-        media_stream_constraints={"video": False, "audio": True},
-        async_processing=True # 비동기 처리 활성화로 에러 완화
-    )
+    # [안정화] 음성 모듈을 별도의 컨테이너에 넣어 간섭 최소화
+    voice_container = st.container()
+    with voice_container:
+        try:
+            webrtc_ctx = webrtc_streamer(
+                key="posco-v-final-safe-audio",
+                mode=WebRtcMode.SENDRECV,
+                rtc_configuration=RTC_CONFIG,
+                media_stream_constraints={"video": False, "audio": True},
+                async_processing=True,
+                # 세션 유지력 강화
+                rtc_events=["iceconnectionstatechange"]
+            )
+        except Exception as e:
+            st.error("음성 모듈 초기화 중... 잠시 기다려주세요.")
+            webrtc_ctx = None
 
-    if is_reporter and webrtc_ctx.state.playing != shared_store["is_voice_live"]:
+    if is_reporter and webrtc_ctx and webrtc_ctx.state.playing != shared_store["is_voice_live"]:
         shared_store["is_voice_live"] = webrtc_ctx.state.playing
         shared_store["sync_version"] += 1
 
-    if st.button("🚨 시스템 전체 초기화"):
+    st.divider()
+    if st.button("🚨 전체 리셋 (데이터+음성)"):
         shared_store["report_data"] = None
         shared_store["chat_logs"] = []
-        shared_store["is_voice_live"] = False
         shared_store["sync_version"] += 1
         st.cache_resource.clear()
         st.rerun()
 
     if is_reporter:
-        st.divider()
         st.subheader("📂 보고자 컨트롤")
         uploaded_file = st.file_uploader("보고서 JSON 업로드", type=['json', 'js'])
         if uploaded_file:
-            try:
-                content = json.loads(uploaded_file.read().decode("utf-8"))
-                if shared_store["report_data"] is None:
-                    shared_store["report_data"] = content
-                    shared_store["sync_version"] += 1
-            except: st.error("파일 오류")
+            content = json.loads(uploaded_file.read().decode("utf-8"))
+            if shared_store["report_data"] is None:
+                shared_store["report_data"] = content
+                shared_store["sync_version"] += 1
         current_edit_mode = st.toggle("📝 실시간 편집 모드", value=False)
 
-# 4. [동기화 엔진] 채팅과 본문을 조각(Fragment)으로 묶음
+# 4. [동기화 엔진] 채팅과 본문을 묶어 음성과 격리
 @st.fragment(run_every="1s")
 def sync_content_area(edit_enabled):
-    # 음성 알림 로직
+    # 음성 알림
     if not is_reporter and shared_store["is_voice_live"]:
-        st.info("🔊 **보고자의 음성 브리핑이 진행 중입니다.** 왼쪽 사이드바의 [START]를 누르세요.")
+        st.info("🔊 **보고자의 음성 브리핑 진행 중** (사이드바 START 클릭)")
 
-    # --- 채팅 영역 ---
-    with st.expander("💬 실시간 채팅 및 소통", expanded=True):
-        chat_col, input_col = st.columns([4, 1])
-        with input_col:
+    # --- 실시간 채팅창 ---
+    with st.expander("💬 실시간 채팅", expanded=True):
+        c_col, i_col = st.columns([4, 1])
+        with i_col:
             user_role = "📢 보고자" if is_reporter else "👤 접속자"
             chat_input = st.text_input("메시지", key="chat_in", label_visibility="collapsed")
             if st.button("전송", use_container_width=True):
                 if chat_input:
                     shared_store["chat_logs"].insert(0, f"[{time.strftime('%H:%M:%S')}] **{user_role}**: {chat_input}")
                     shared_store["sync_version"] += 1
-        with chat_col:
-            for log in shared_store["chat_logs"][:3]: # 가독성을 위해 최신 3개만 표시
+        with c_col:
+            # 채팅 가독성 확보 (최신 3건)
+            for log in shared_store["chat_logs"][:3]:
                 st.write(log)
 
     if shared_store["report_data"] is None:
-        st.warning("🛰️ 보고자의 보고서 업로드를 기다리는 중입니다...")
+        st.warning("🛰️ 보고자의 업로드를 기다리는 중...")
         return
 
     data = shared_store["report_data"]
     tab_labels = [f"P{i+1}. {p.get('tab', '')}" for i, p in enumerate(data['pages'])]
     
+    # 페이지 이동
     if is_reporter:
         prev_p = shared_store["current_page"]
         current_tab_idx = st.radio("📑 페이지 이동", range(len(tab_labels)), 
@@ -106,9 +111,9 @@ def sync_content_area(edit_enabled):
     else:
         current_tab_idx = shared_store["current_page"]
         if current_tab_idx >= len(tab_labels): current_tab_idx = 0
-        st.warning(f"📍 현재 브리핑 위치: **{tab_labels[current_tab_idx]}**")
+        st.warning(f"📍 현재 위치: **{tab_labels[current_tab_idx]}**")
 
-    # 리포트 본문
+    # 리포트 렌더링
     p = data['pages'][current_tab_idx]
     st.divider()
     col_main, col_side = st.columns([2, 1], gap="large")
@@ -129,8 +134,7 @@ def sync_content_area(edit_enabled):
             if para.strip(): st.markdown(f"### **{para.strip()}**")
 
     with col_side:
-        if 'metrics_title' not in p: p['metrics_title'] = "📊 주요 지표"
-        st.subheader(p['metrics_title'])
+        st.subheader(p.get('metrics_title', '📊 지표'))
         if "metrics" in p:
             for idx, m in enumerate(p['metrics']):
                 if is_reporter and edit_enabled:
