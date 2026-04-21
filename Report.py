@@ -4,36 +4,39 @@ import json
 import time
 import base64
 
-# 1. 페이지 설정 및 프리미엄 디자인 프레임워크 (CSS 전면 개편)
+# 1. 페이지 설정 및 프리미엄 디자인 프레임워크 (CSS 전면 개편 및 충돌 방지)
 st.set_page_config(page_title="POSCO E&C AI Live Sync Master", layout="wide")
 
 st.markdown("""
     <style>
-    /* 1. 앱 전체 배경을 차분한 파스텔톤으로 눌러서 흰색 카드가 돋보이게 함 */
-    [data-testid="stAppViewContainer"] {
-        background-color: #eef2f6 !important;
-    }
+    /* 앱 전체 배경색 */
+    [data-testid="stAppViewContainer"] { background-color: #eef2f6 !important; }
     
-    /* 2. 메인 화면의 컨테이너를 완벽한 '독립된 고급 카드'로 변신 (얇은 선 제거, 상단 포인트, 그림자 추가) */
+    /* [핵심] 메인 화면의 컨테이너를 완벽한 '독립된 고급 카드'로 래핑 */
     .main [data-testid="stVerticalBlockBorderWrapper"] {
         background-color: #ffffff !important;
         border: none !important; 
-        border-top: 7px solid #005ab5 !important; /* 포스코 톤의 블루 포인트 라인 */
+        border-top: 7px solid #005ab5 !important; 
         border-radius: 16px !important;
         padding: 35px 40px !important;
-        box-shadow: 0 12px 40px rgba(0,0,0,0.08) !important; /* 부드럽고 깊은 그림자 */
-        margin-bottom: 60px !important; /* 섹션 간 간격 대폭 확대 */
+        box-shadow: 0 12px 40px rgba(0,0,0,0.08) !important; 
+        margin-bottom: 60px !important; 
     }
     
-    /* 3. 사이드 지표 슬롯: 메인 텍스트와 대비되는 부드러운 배경색 */
+    /* 사이드바 내부의 컨테이너는 원래 스타일 유지 (레이아웃 깨짐 방지) */
+    [data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"] {
+        border: 1px solid #dee2e6 !important; border-top: none !important;
+        padding: 15px !important; box-shadow: none !important; margin-bottom: 10px !important;
+    }
+    
+    /* 사이드 지표 슬롯: HTML 렌더링 전용 클래스 */
     .side-slot-card {
         background-color: #f8fafc; padding: 20px; border-radius: 14px;
         border: 1px solid #edf2f7; border-left: 6px solid #3b82f6; margin-bottom: 16px;
     }
     
-    /* 글자 및 기타 요소 스타일링 */
     .text-line { white-space: pre-wrap; word-wrap: break-word; line-height: 1.8; margin-bottom: 10px; color: #334155; }
-    .voice-panel { background: #ffffff; border: 1px solid #e2e8f0; padding: 15px; border-radius: 16px; text-align: center; box-shadow: 0 4px 6px rgba(0,0,0,0.02); }
+    .voice-panel { background: #ffffff; border: 1px solid #e2e8f0; padding: 15px; border-radius: 16px; text-align: center; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -52,7 +55,7 @@ shared_store = get_global_store()
 def create_empty_page():
     return {
         "tab": "새 페이지", "header": "제목을 입력하세요", "header_fs": 45, "header_color": "#1a1c1e",
-        "sections": [{"title": "새로운 분석 섹션", "lines": [{"text": "내용을 입력하세요", "size": 22, "color": "#1e293b"}], "main_image": None, "side_items": []}]
+        "sections": [{"title": "새로운 분석 섹션", "title_fs": 32, "lines": [{"text": "내용을 입력하세요", "size": 22, "color": "#1e293b"}], "main_image": None, "side_items": []}]
     }
 
 def adapt_json_format(raw_data):
@@ -110,7 +113,7 @@ with st.sidebar:
         st.divider()
         uploaded_file = st.file_uploader("📂 JSON 로드", type=['json'])
         
-        # [버그 수정 유지] 파일 로드 시 무한 초기화 방지
+        # 파일 로드 시 중복 덮어쓰기 방지 버그 패치 유지
         if uploaded_file:
             if st.session_state.get("last_uploaded_id") != uploaded_file.file_id:
                 shared_store["report_data"] = adapt_json_format(json.loads(uploaded_file.read().decode("utf-8")))
@@ -145,7 +148,7 @@ def main_content_area(edit_enabled):
 
     data = shared_store["report_data"]
     
-    # [인덱스 에러 방지 유지]
+    # 인덱스 에러 안전 장치 유지
     if shared_store["current_page"] >= len(data['pages']):
         shared_store["current_page"] = max(0, len(data['pages']) - 1)
 
@@ -176,27 +179,33 @@ def main_content_area(edit_enabled):
 
     st.markdown(f'<h1 style="text-align:center; font-size:{p.get("header_fs", 45)}px; color:{p.get("header_color", "#1a1c1e")}; padding-bottom:20px;">{p.get("header")}</h1>', unsafe_allow_html=True)
 
-    # --- [섹션 루프: 프리미엄 카드 디자인 적용] ---
+    # --- [섹션 루프: 완벽한 카드 컨테이너 적용] ---
     sections = p.setdefault('sections', [])
     if edit_enabled and st.button("➕ 새로운 세로 섹션 카드 추가", key=f"add_sec_{shared_store['current_page']}"):
-        sections.append({"title": "새 섹션", "lines": [{"text": "내용", "size": 22, "color": "#1e293b"}], "main_image": None, "side_items": []})
+        sections.append({"title": "새 섹션", "title_fs": 32, "lines": [{"text": "내용", "size": 22, "color": "#1e293b"}], "main_image": None, "side_items": []})
         st.rerun()
 
     for s_idx, sec in enumerate(sections):
-        # [핵심] 얇은 선이 아닌, CSS가 입혀진 '고급 카드' 컨테이너가 생성됩니다.
+        # [핵심] Streamlit의 네이티브 컨테이너 사용 (CSS가 이 상자를 '고급 카드'로 만듭니다)
         with st.container(border=True): 
             col_main, col_side = st.columns([2.5, 1], gap="large")
             
             with col_main:
                 if edit_enabled:
-                    sec['title'] = st.text_input(f"섹션 {s_idx+1} 제목", sec.get('title', ''), key=f"st_{shared_store['current_page']}_{s_idx}")
+                    # [추가됨] 섹션 제목 글자 크기 조절
+                    sc1, sc2 = st.columns([3, 1])
+                    sec['title'] = sc1.text_input(f"섹션 {s_idx+1} 제목", sec.get('title', ''), key=f"st_{shared_store['current_page']}_{s_idx}")
+                    sec['title_fs'] = sc2.slider("제목 크기", 10, 80, int(sec.get('title_fs', 32)), key=f"stfs_{shared_store['current_page']}_{s_idx}")
+                    
                     with st.expander("🖼️ 본문(좌측) 그림 관리"):
                         img_f = st.file_uploader(f"그림 (S{s_idx+1})", type=['png', 'jpg'], key=f"simg_{shared_store['current_page']}_{s_idx}")
                         if img_f: sec['main_image'] = f"data:image/png;base64,{base64.b64encode(img_f.getvalue()).decode()}"
                         sec['img_width'] = st.slider("너비", 100, 1200, int(sec.get('img_width', 750)), key=f"sw_{shared_store['current_page']}_{s_idx}")
                         if st.button("🗑️ 그림 삭제", key=f"simg_del_{shared_store['current_page']}_{s_idx}"): sec['main_image'] = None; st.rerun()
                 
-                st.markdown(f"## {sec.get('title')}")
+                # 섹션 제목 출력 (조절된 크기 반영)
+                st.markdown(f"<h2 style='font-size:{sec.get('title_fs', 32)}px; color:#1a1c1e;'>{sec.get('title')}</h2>", unsafe_allow_html=True)
+                
                 if sec.get('main_image'): st.image(sec['main_image'], width=int(sec.get('img_width', 750)))
                 
                 # 텍스트 줄 편집
@@ -222,26 +231,38 @@ def main_content_area(edit_enabled):
                 sec.setdefault('side_items', [])
                 if edit_enabled:
                     sc1, sc2 = st.columns(2)
-                    if sc1.button("📊 지표", key=f"am_{shared_store['current_page']}_{s_idx}"): sec['side_items'].append({"type":"metric", "label":"항목", "value":"0", "color":"#007bff"}); st.rerun()
-                    if sc2.button("🖼️ 그림", key=f"ai_{shared_store['current_page']}_{s_idx}"): sec['side_items'].append({"type":"image", "src":None, "width":350}); st.rerun()
+                    if sc1.button("📊 지표 추가", key=f"am_{shared_store['current_page']}_{s_idx}"): sec['side_items'].append({"type":"metric", "label":"항목", "value":"0", "color":"#007bff"}); st.rerun()
+                    if sc2.button("🖼️ 그림 추가", key=f"ai_{shared_store['current_page']}_{s_idx}"): sec['side_items'].append({"type":"image", "src":None, "width":350}); st.rerun()
                 
                 for i_idx, item in enumerate(sec['side_items']):
-                    st.markdown('<div class="side-slot-card">', unsafe_allow_html=True)
+                    # [핵심] 편집 UI(Streamlit 위젯)와 출력 UI(순수 HTML)를 분리하여 렌더링 충돌(기괴한 바) 원천 차단
                     if edit_enabled:
-                        cc1, cc2 = st.columns([4, 1])
-                        if cc2.button("🗑️", key=f"sdel_{shared_store['current_page']}_{s_idx}_{i_idx}"): sec['side_items'].pop(i_idx); st.rerun()
-                        if item['type'] == "metric":
-                            item['label'], item['value'] = st.text_input("명", item['label'], key=f"il_{shared_store['current_page']}_{s_idx}_{i_idx}"), st.text_input("값", item['value'], key=f"iv_{shared_store['current_page']}_{s_idx}_{i_idx}")
-                            item['color'] = st.color_picker("색상", item.get('color', '#007bff'), key=f"ic_{shared_store['current_page']}_{s_idx}_{i_idx}")
-                        elif item['type'] == "image":
-                            siu = st.file_uploader("사이드 그림", key=f"siu_{shared_store['current_page']}_{s_idx}_{i_idx}")
-                            if siu: item['src'] = f"data:image/png;base64,{base64.b64encode(siu.getvalue()).decode()}"
-                            item['width'] = st.slider("너비", 100, 500, int(item.get('width', 350)), key=f"siw_{shared_store['current_page']}_{s_idx}_{i_idx}")
+                        with st.expander(f"⚙️ {item.get('label', '아이템')} 편집", expanded=True):
+                            if st.button("🗑️ 이 아이템 삭제", key=f"sdel_{shared_store['current_page']}_{s_idx}_{i_idx}"): sec['side_items'].pop(i_idx); st.rerun()
+                            if item['type'] == "metric":
+                                item['label'] = st.text_input("지표명", item.get('label', ''), key=f"il_{shared_store['current_page']}_{s_idx}_{i_idx}")
+                                item['value'] = st.text_input("수치 값", item.get('value', ''), key=f"iv_{shared_store['current_page']}_{s_idx}_{i_idx}")
+                                item['color'] = st.color_picker("수치 색상", item.get('color', '#007bff'), key=f"ic_{shared_store['current_page']}_{s_idx}_{i_idx}")
+                            elif item['type'] == "image":
+                                siu = st.file_uploader("사이드 그림 업로드", key=f"siu_{shared_store['current_page']}_{s_idx}_{i_idx}")
+                                if siu: item['src'] = f"data:image/png;base64,{base64.b64encode(siu.getvalue()).decode()}"
+                                item['width'] = st.slider("사이드 그림 너비", 100, 500, int(item.get('width', 350)), key=f"siw_{shared_store['current_page']}_{s_idx}_{i_idx}")
                     
+                    # 깨지지 않는 순수 HTML 블록 렌더링
                     if item['type'] == "metric":
-                        st.markdown(f"<small style='color:#64748b;'>{item['label']}</small><div style='font-size:28px; font-weight:bold; color:{item.get('color', '#007bff')};'>{item['value']}</div>", unsafe_allow_html=True)
+                        html = f"""
+                        <div class="side-slot-card">
+                            <div style="font-size:14px; color:#64748b; margin-bottom:5px;">{item.get('label', '')}</div>
+                            <div style="font-size:28px; font-weight:bold; color:{item.get('color', '#007bff')};">{item.get('value', '')}</div>
+                        </div>
+                        """
+                        st.markdown(html, unsafe_allow_html=True)
                     elif item['type'] == "image" and item.get('src'):
-                        st.image(item['src'], width=int(item.get('width', 350)))
-                    st.markdown('</div>', unsafe_allow_html=True)
+                        html = f"""
+                        <div class="side-slot-card">
+                            <img src="{item['src']}" style="width:{item.get('width', 350)}px; border-radius:8px;" />
+                        </div>
+                        """
+                        st.markdown(html, unsafe_allow_html=True)
 
 main_content_area(edit_mode)
