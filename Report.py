@@ -13,7 +13,7 @@ def get_global_store():
         "report_data": None,
         "current_page": 0,
         "active_users": 0,
-        "user_labels": {}, # {UUID: "참여자 N"}
+        "user_labels": {}, 
         "sync_version": 0,
         "chat_logs": [],
         "voice_channel": "posco_briefing_room"
@@ -21,11 +21,11 @@ def get_global_store():
 
 shared_store = get_global_store()
 
-# --- [개선된 ID 동기화: st.stop 제거 버전] ---
+# --- [ID 동기화 로직] ---
 def sync_user_id():
     js_code = """
     <script>
-    const storageKey = 'posco_uid_v3';
+    const storageKey = 'posco_uid_final';
     let uid = localStorage.getItem(storageKey);
     if (!uid) {
         uid = 'u_' + Math.random().toString(36).substr(2, 9);
@@ -40,7 +40,6 @@ def sync_user_id():
     """
     components.html(js_code, height=0)
 
-# 3. [참여자 식별 프로세스]
 browser_uid = st.query_params.get("uid")
 
 if "user_label" not in st.session_state:
@@ -53,11 +52,10 @@ if "user_label" not in st.session_state:
             shared_store["user_labels"][browser_uid] = new_label
             st.session_state.user_label = new_label
     else:
-        # ID가 아직 없을 때만 JS 실행하고, 화면은 "준비 중" 표시로 유지
         sync_user_id()
         st.session_state.user_label = "식별 중"
 
-# 4. [Agora 음성 컴포넌트]
+# 3. [Agora 음성 컴포넌트]
 def agora_voice_component(app_id, channel, role):
     custom_html = f"""
     <script src="https://download.agora.io/sdk/release/AgoraRTC_N-4.11.0.js"></script>
@@ -115,26 +113,20 @@ def agora_voice_component(app_id, channel, role):
 with st.sidebar:
     st.title("🎙️ AI Live Sync")
     is_reporter = st.toggle("🔑 보고자 권한 활성화", value=False)
-    
-    # 본인 식별 이름 표시
-    current_label = st.session_state.user_label
-    my_display = "📢 보고자 (나)" if is_reporter else f"👤 {current_label} (나)"
+    my_display = "📢 보고자 (나)" if is_reporter else f"👤 {st.session_state.user_label} (나)"
     st.info(f"📍 접속 계정: **{my_display}**")
 
     try:
         agora_id = st.secrets["AGORA_APP_ID"]
         agora_voice_component(app_id=agora_id, channel=shared_store["voice_channel"], role="reporter" if is_reporter else "audience")
-    except:
-        st.warning("⚠️ Agora ID 설정 필요")
+    except: st.warning("⚠️ Agora ID 설정 필요")
 
-    # 참여자 목록
     with st.expander(f"👥 참여자 명단 ({len(shared_store['user_labels']) + 1}명)", expanded=False):
         st.write(f"- {'**📢 보고자 (나)**' if is_reporter else '📢 보고자'}")
         for label in shared_store["user_labels"].values():
-            if not is_reporter and label == current_label:
+            if not is_reporter and label == st.session_state.user_label:
                 st.write(f"- **👤 {label} (나)**")
-            else:
-                st.write(f"- 👤 {label}")
+            else: st.write(f"- 👤 {label}")
 
     if is_reporter:
         st.divider()
@@ -166,14 +158,14 @@ def sync_content_area(edit_enabled):
             for log in shared_store["chat_logs"][:3]: st.write(log)
 
     if shared_store["report_data"] is None:
-        st.warning("🛰️ 보고서 대기 중... 보고자가 업로드하면 즉시 시작됩니다.")
+        st.warning("🛰️ 보고서 대기 중...")
         return
 
     data = shared_store["report_data"]
     tab_labels = [f"P{i+1}. {p.get('tab', '')}" for i, p in enumerate(data['pages'])]
     
     if is_reporter:
-        current_tab_idx = st.radio("📑 페이지 이동", range(len(tab_labels)), index=shared_store["current_page"], format_func=lambda x: tab_labels[x], horizontal=True)
+        current_tab_idx = st.radio("📑 페이지 이동", range(len(tab_labels)), index=shared_store["current_page"] if shared_store["current_page"] < len(tab_labels) else 0, format_func=lambda x: tab_labels[x], horizontal=True)
         if shared_store["current_page"] != current_tab_idx:
             shared_store["current_page"] = current_tab_idx
             shared_store["sync_version"] += 1
@@ -182,18 +174,27 @@ def sync_content_area(edit_enabled):
         if current_tab_idx >= len(tab_labels): current_tab_idx = 0
         st.warning(f"📍 현재 브리핑 위치: **{tab_labels[current_tab_idx]}**")
 
-    # 리포트 본문
+    # --- 본문 및 편집 영역 복구 ---
     p = data['pages'][current_tab_idx]
     st.divider()
     col_main, col_side = st.columns([2, 1], gap="large")
     
     with col_main:
         if is_reporter and edit_enabled:
-            p['header'] = st.text_input("📌 제목", p.get('header', ''), key=f"h_{current_tab_idx}")
-            p['content'] = st.text_area("📄 본문", p.get('content', ''), height=250, key=f"c_{current_tab_idx}")
-            shared_store["sync_version"] += 1
+            # P1, P2 등 탭 제목 수정 기능 복구
+            new_tab = st.text_input("🔖 탭 이름 수정 (P1, P2...)", p.get('tab', ''), key=f"t_{current_tab_idx}")
+            new_header = st.text_input("📌 제목 수정", p.get('header', ''), key=f"h_{current_tab_idx}")
+            new_content = st.text_area("📄 본문 수정", p.get('content', ''), height=250, key=f"c_{current_tab_idx}")
+            
+            # 변경 감지 시 즉각 반영
+            if new_tab != p.get('tab') or new_header != p.get('header') or new_content != p.get('content'):
+                p['tab'], p['header'], p['content'] = new_tab, new_header, new_content
+                shared_store["sync_version"] += 1
+        
         st.markdown(f"# {p.get('header', '')}")
-        if "image" in p: st.image(p["image"], width=800)
+        if "image" in p: 
+            # 엑스박스 방지: URL 형식인지 확인 필수
+            st.image(p["image"], width=800)
         for para in p.get('content', '').split('\n'):
             if para.strip(): st.markdown(f"### **{para.strip()}**")
 
