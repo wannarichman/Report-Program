@@ -21,18 +21,16 @@ def get_global_store():
 
 shared_store = get_global_store()
 
-# --- [브라우저 쿠키/로컬스토리지를 이용한 유저 고정 로직] ---
+# --- [개선된 브라우저 고정 ID 동기화 로직] ---
 def sync_user_id():
-    # 브라우저에 저장된 ID를 체크하고 없으면 생성하여 Streamlit으로 전송
     js_code = """
     <script>
-    const storageKey = 'posco_report_uid_v1';
+    const storageKey = 'posco_report_uid_v2';
     let uid = localStorage.getItem(storageKey);
     if (!uid) {
         uid = 'u_' + Math.random().toString(36).substr(2, 9);
         localStorage.setItem(storageKey, uid);
     }
-    const streamlitDoc = window.parent.document;
     const url = new URL(window.location.href);
     if (url.searchParams.get('uid') !== uid) {
         url.searchParams.set('uid', uid);
@@ -42,25 +40,25 @@ def sync_user_id():
     """
     components.html(js_code, height=0)
 
-# URL 파라미터에서 유저 고유 ID 추출
-query_params = st.query_params
-browser_uid = query_params.get("uid")
+# URL에서 ID 즉시 추출
+browser_uid = st.query_params.get("uid")
 
 if "user_label" not in st.session_state:
     if browser_uid:
-        # 이미 이 브라우저로 접속한 기록이 있는 경우
+        # 1. 기존 접속 기록 확인
         if browser_uid in shared_store["user_labels"]:
             st.session_state.user_label = shared_store["user_labels"][browser_uid]
         else:
-            # 처음 접속인 경우 번호 부여
+            # 2. 신규 접속자 번호 부여
             shared_store["active_users"] += 1
             new_label = f"참여자 {shared_store['active_users']}"
             shared_store["user_labels"][browser_uid] = new_label
             st.session_state.user_label = new_label
     else:
-        # ID 수신 전 임시 처리
+        # ID가 아직 URL에 없다면 자바스크립트 실행 후 대기
         sync_user_id()
-        st.session_state.user_label = "접속 중..."
+        st.session_state.user_label = "식별 중..."
+        st.stop() # ID가 생성되어 돌아올 때까지 실행 중단
 
 # 3. [Agora 음성 컴포넌트]
 def agora_voice_component(app_id, channel, role):
@@ -121,9 +119,9 @@ with st.sidebar:
     st.title("🎙️ AI Live Sync")
     is_reporter = st.toggle("🔑 보고자 권한 활성화", value=False)
     
-    # 본인 식별 이름 결정
-    my_name_display = "📢 보고자 (나)" if is_reporter else f"👤 {st.session_state.user_label} (나)"
-    st.info(f"📍 접속 계정: **{my_name_display}**")
+    # 본인 식별 이름 (나) 표시
+    my_name = "📢 보고자 (나)" if is_reporter else f"👤 {st.session_state.user_label} (나)"
+    st.info(f"📍 접속 계정: **{my_name}**")
 
     try:
         agora_id = st.secrets["AGORA_APP_ID"]
