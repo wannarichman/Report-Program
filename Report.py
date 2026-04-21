@@ -25,7 +25,7 @@ shared_store = get_global_store()
 def sync_user_id():
     js_code = """
     <script>
-    const storageKey = 'posco_uid_final_v15';
+    const storageKey = 'posco_uid_final_v16';
     let uid = localStorage.getItem(storageKey);
     if (!uid) {
         uid = 'u_' + Math.random().toString(36).substr(2, 9);
@@ -54,7 +54,7 @@ if "user_label" not in st.session_state:
         sync_user_id()
         st.session_state.user_label = "식별 중"
 
-# 3. [Agora 음성 컴포넌트]
+# 3. [Agora 음성 컴포넌트] - 중괄호 이중 처리 완료
 def agora_voice_component(app_id, channel, role):
     custom_html = f"""
     <script src="https://download.agora.io/sdk/release/AgoraRTC_N-4.11.0.js"></script>
@@ -64,29 +64,29 @@ def agora_voice_component(app_id, channel, role):
         <button id="leave" style="padding: 10px 20px; cursor: pointer; border-radius: 6px; border: none; background: #dc3545; color: white; font-weight: bold; display: none;">종료</button>
     </div>
     <script>
-        let client = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
-        let localTracks = { audioTrack: null };
-        async function join() {
-            try {
+        let client = AgoraRTC.createClient({{ mode: "rtc", codec: "vp8" }});
+        let localTracks = {{ audioTrack: null }};
+        async function join() {{
+            try {{
                 await client.join("{app_id}", "{channel}", null, null);
-                if ("{role}" === "reporter") {
+                if ("{role}" === "reporter") {{
                     localTracks.audioTrack = await AgoraRTC.createMicrophoneAudioTrack();
                     await client.publish([localTracks.audioTrack]);
-                }
-                client.on("user-published", async (user, mediaType) => {
+                }}
+                client.on("user-published", async (user, mediaType) => {{
                     await client.subscribe(user, mediaType);
-                    if (mediaType === "audio") { user.audioTrack.play(); }
-                });
+                    if (mediaType === "audio") {{ user.audioTrack.play(); }}
+                }});
                 document.getElementById("join").style.display = "none";
                 document.getElementById("leave").style.display = "inline";
-            } catch (e) { console.error(e); }
-        }
-        async function leave() {
-            for (let trackName in localTracks) { if (localTracks[trackName]) { localTracks[trackName].stop(); localTracks[trackName].close(); } }
+            }} catch (e) {{ console.error(e); }}
+        }}
+        async function leave() {{
+            for (let trackName in localTracks) {{ if (localTracks[trackName]) {{ localTracks[trackName].stop(); localTracks[trackName].close(); }} }}
             await client.leave();
             document.getElementById("join").style.display = "inline";
             document.getElementById("leave").style.display = "none";
-        }
+        }}
         document.getElementById("join").onclick = join;
         document.getElementById("leave").onclick = leave;
     </script>
@@ -107,13 +107,12 @@ with st.sidebar:
     if is_reporter:
         st.divider()
         if shared_store["report_data"]:
-            st.download_button("📥 현재 편집본 JSON 저장", data=json.dumps(shared_store["report_data"], indent=4, ensure_ascii=False), file_name=f"posco_report_{time.strftime('%H%M')}.json", mime="application/json", use_container_width=True)
+            st.download_button("📥 현재 편집본 JSON 저장", data=json.dumps(shared_store["report_data"], indent=4, ensure_ascii=False), file_name=f"posco_report.json", mime="application/json", use_container_width=True)
         
         if st.button("🚨 초기화", use_container_width=True):
             shared_store.update({"report_data": None, "chat_logs": [], "sync_version": shared_store["sync_version"]+1, "active_users": 0, "user_labels": {}})
             st.cache_resource.clear(); st.rerun()
         
-        st.divider()
         uploaded_file = st.file_uploader("📂 JSON 업로드", type=['json', 'js'])
         if uploaded_file:
             try:
@@ -126,8 +125,8 @@ with st.sidebar:
                             while len(m_data) < 4: m_data.append(True)
                 if shared_store["report_data"] is None:
                     shared_store["report_data"] = content; shared_store["sync_version"] += 1
-            except: st.error("JSON 형식 오류")
-        current_edit_mode = st.toggle("📝 실시간 편집 모드", value=False)
+            except: st.error("JSON 오류")
+        current_edit_mode = st.toggle("📝 편집 모드", value=False)
 
 # 4. [동기화 엔진]
 @st.fragment(run_every="1s")
@@ -150,33 +149,23 @@ def sync_content_area(edit_enabled):
 
     st.divider()
     
-    # [편집 인터페이스 - 제목/크기 마스터 설정]
     if is_reporter and edit_enabled:
         with st.expander("🛠️ 레이아웃 및 전체 텍스트 크기 제어", expanded=True):
             e1, e2 = st.columns(2)
             p['tab'] = e1.text_input("🔖 탭 이름", p.get('tab', ''), key=f"t_{shared_store['current_page']}")
             p['header'] = e2.text_input("📌 대제목 수정", p.get('header', ''), key=f"h_{shared_store['current_page']}")
-            
             s1, s2, s3 = st.columns(3)
-            p['font_size'] = s1.slider("📏 본문 글자 크기", 10, 80, int(p.get('font_size', 24)))
-            p['metric_font_size'] = s2.slider("📊 우측 지표 글자 크기", 10, 60, int(p.get('metric_font_size', 20)))
+            p['font_size'] = s1.slider("📏 본문 크기", 10, 80, int(p.get('font_size', 24)))
+            p['metric_font_size'] = s2.slider("📊 지표 크기", 10, 60, int(p.get('metric_font_size', 20)))
             p['img_width'] = s3.slider("🖼️ 그림 너비", 100, 1000, int(p.get('img_width', 800)), 50)
-            
-            v1, v2, v3 = st.columns(3)
-            p['show_p'] = v1.checkbox("페이지 노출", value=p.get('show_p', True))
-            p['show_img'] = v2.checkbox("이미지 노출", value=p.get('show_img', True))
-            p['show_txt'] = v3.checkbox("본문 노출", value=p.get('show_txt', True))
             shared_store["sync_version"] += 1
 
     col_main, col_side = st.columns([2, 1], gap="large")
-    
     with col_main:
         h_val = p.get('header', '')
         st.markdown(h_val if h_val.startswith('#') else f"# {h_val}")
-
         if p.get('show_img', True) and "image" in p:
             st.image(p["image"], width=int(p.get('img_width', 800)))
-        
         if p.get('show_txt', True):
             lines = p.get('content', '').split('\n')
             new_lines = []
@@ -192,39 +181,25 @@ def sync_content_area(edit_enabled):
                     if line.strip():
                         if line.startswith('#'): st.markdown(line)
                         else: st.markdown(f'<p style="font-size:{fs}px; font-weight:bold; margin:0;">{line}</p>', unsafe_allow_html=True)
-            
             if is_reporter and edit_enabled:
-                if st.button("➕ 본문 줄 추가"):
-                    new_lines.append("새로운 내용"); shared_store["sync_version"] += 1
+                if st.button("➕ 줄 추가"):
+                    new_lines.append("새 내용"); shared_store["sync_version"] += 1
                 p['content'] = '\n'.join(new_lines); shared_store["sync_version"] += 1
 
     with col_side:
-        # [우측 지표 영역 편집 기능 강화]
         m_title = p.get('metrics_title', '📊 지표')
         if is_reporter and edit_enabled:
-            p['metrics_title'] = st.text_input("📊 지표 섹션 제목 수정", m_title, key=f"mt_{shared_store['current_page']}")
+            p['metrics_title'] = st.text_input("📊 제목 수정", m_title, key=f"mt_{shared_store['current_page']}")
         st.subheader(p.get('metrics_title'))
-        
         m_fs = p.get('metric_font_size', 20)
-        
         if "metrics" in p:
             for idx, m in enumerate(p['metrics']):
                 while len(m) < 4: m.append(True)
                 if is_reporter and edit_enabled:
-                    with st.container(border=True):
-                        m[3] = st.toggle(f"지표 {idx+1} 노출", value=m[3], key=f"mtog_{shared_store['current_page']}_{idx}")
-                        m[0] = st.text_input(f"라벨 {idx+1}", m[0], key=f"ml_{idx}")
-                        m[1] = st.text_input(f"수치 {idx+1}", m[1], key=f"mv_{idx}")
-                        shared_store["sync_version"] += 1
-                
+                    m[3] = st.toggle(f"지표 {idx+1} 노출", value=m[3], key=f"mtog_{shared_store['current_page']}_{idx}")
+                    m[0] = st.text_input(f"라벨 {idx+1}", m[0], key=f"ml_{idx}")
+                    m[1] = st.text_input(f"수치 {idx+1}", m[1], key=f"mv_{idx}")
                 if m[3] or is_reporter:
-                    # 지표 영역 글자 크기 커스텀 렌더링
-                    st.markdown(f"""
-                    <div style="background-color:#f1f3f6; padding:10px; border-radius:10px; margin-bottom:10px; border-left: 5px solid #007bff;">
-                        <p style="font-size:{m_fs * 0.7}px; color:#666; margin:0;">{m[0]}{' (숨김)' if not m[3] else ''}</p>
-                        <p style="font-size:{m_fs}px; font-weight:bold; color:#333; margin:0;">{m[1]}</p>
-                    </div>
-                    """, unsafe_allow_html=True)
+                    st.markdown(f'<div style="background-color:#f1f3f6; padding:10px; border-radius:10px; margin-bottom:10px; border-left: 5px solid #007bff;"><p style="font-size:{m_fs * 0.7}px; color:#666; margin:0;">{m[0]}{" (숨김)" if not m[3] else ""}</p><p style="font-size:{m_fs}px; font-weight:bold; color:#333; margin:0;">{m[1]}</p></div>', unsafe_allow_html=True)
 
-# 실행
 sync_content_area(current_edit_mode if is_reporter else False)
