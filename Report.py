@@ -99,7 +99,7 @@ def get_global_store():
         "current_page": 0, 
         "user_labels": {}, 
         "chat_history": [], 
-        "voice_active_users_list": [],
+        "active_sessions": {}, # {uid: {"label": label, "last_seen": timestamp}} 명단 버그 해결용
         "voice_channel": "posco_briefing_room"
     }
 
@@ -139,13 +139,16 @@ def adapt_json_format(raw_data):
     return {"pages": [create_empty_page()]}
 
 # ==========================================
-# 4. ID 식별 및 음성 시스템 (Agora - 음소거 복구)
+# 4. ID 식별 및 음성 시스템
 # ==========================================
+if "uid" not in st.session_state:
+    st.session_state.uid = st.query_params.get("uid", f"u_{int(time.time()*1000)}")
+    st.query_params["uid"] = st.session_state.uid
+
 if "user_label" not in st.session_state:
-    uid = st.query_params.get("uid", f"u_{int(time.time()*1000)}")
-    st.query_params["uid"] = uid
-    label = shared_store["user_labels"].get(uid, f"참여자 {len(shared_store['user_labels']) + 1}")
-    shared_store["user_labels"][uid] = label
+    # 현재 활성 세션(10초 이내)을 기준으로 참여자 번호 부여
+    active_now = len([s for s in shared_store["active_sessions"].values() if time.time() - s["last_seen"] < 10])
+    label = f"참여자 {active_now + 1}"
     st.session_state.user_label = label
 
 def agora_voice_system(app_id, channel, user_label):
@@ -228,14 +231,21 @@ with st.sidebar:
     except: 
         st.warning("⚠️ Agora ID가 설정되지 않았습니다.")
 
+    # [수정됨] 실시간 동시 접속자만 표시 (누적 방지)
     with st.container(border=True):
-        st.caption("👥 실시간 참여 명단")
-        if is_reporter:
-            options = ["📢 보고자"] + [f"👤 참여자 {i+1}" for i in range(len(shared_store['user_labels']))]
-            shared_store["voice_active_users_list"] = st.multiselect("명단 동기화", options=options, default=shared_store.get("voice_active_users_list", []))
+        st.caption("👥 실시간 접속 멤버")
+        now = time.time()
+        # 6초 이내에 하트비트 신호가 있는 세션만 필터링
+        active_list = [
+            info["label"] for uid, info in shared_store["active_sessions"].items()
+            if now - info["last_seen"] < 6
+        ]
         
-        for user in shared_store.get("voice_active_users_list", []): 
-            st.markdown(f"🟢 **{user}**")
+        if not active_list:
+            st.write("접속자 없음")
+        else:
+            for user in sorted(list(set(active_list))): # 중복 제거 및 정렬
+                st.markdown(f"🟢 **{user}**")
 
     if is_reporter:
         st.divider()
@@ -258,7 +268,7 @@ with st.sidebar:
                 shared_store["current_page"] = 0
                 
         if st.button("🚨 전체 데이터 초기화"):
-            shared_store.update({"report_data": None, "current_page": 0, "chat_history": []})
+            shared_store.update({"report_data": None, "current_page": 0, "chat_history": [], "active_sessions": {}})
             st.session_state.pop("last_uploaded_id", None)
             st.rerun()
             
@@ -279,7 +289,12 @@ with st.sidebar:
 # ==========================================
 @st.fragment(run_every="1s")
 def main_content_area(edit_enabled):
-    
+    # [수정됨] 하트비트 갱신: 1초마다 내 활동 정보를 서버 저장소에 업데이트
+    shared_store["active_sessions"][st.session_state.uid] = {
+        "label": my_label,
+        "last_seen": time.time()
+    }
+
     # --- 6-1. 실시간 상호소통 채팅 ---
     with st.expander("💬 실시간 상호소통 채팅", expanded=False):
         c1, c2 = st.columns([4, 1])
@@ -424,9 +439,7 @@ def main_content_area(edit_enabled):
                             if item['type'] == "metric":
                                 ic1, ic2 = st.columns(2)
                                 item['label'] = ic1.text_input("라벨명", item.get('label', ''), key=f"il_{shared_store['current_page']}_{s_idx}_{i_idx}")
-                                
-                                # [핵심 변경 사항] 엔터키(줄바꿈)를 지원하는 다중 라인 텍스트 입력창
-                                item['value'] = st.text_area("수치/내용 (엔터로 줄바꿈 가능)", item.get('value', ''), height=120, key=f"iv_{shared_store['current_page']}_{s_idx}_{i_idx}")
+                                item['value'] = st.text_area("수치/내용", item.get('value', ''), height=120, key=f"iv_{shared_store['current_page']}_{s_idx}_{i_idx}")
                                 
                                 ic3, ic4 = st.columns(2)
                                 item['label_fs'] = ic3.number_input("라벨 크기", 10, 60, int(item.get('label_fs', 14)), key=f"ilfs_{shared_store['current_page']}_{s_idx}_{i_idx}")
@@ -443,24 +456,11 @@ def main_content_area(edit_enabled):
                                 item['width'] = st.slider("사이드 그림 너비", 100, 500, int(item.get('width', 350)), key=f"siw_{shared_store['current_page']}_{s_idx}_{i_idx}")
                     
                     if item['type'] == "metric":
-                        # [핵심 변경 사항] 사용자가 입력한 엔터(\n)를 HTML 줄바꿈(<br>)으로 변환하여 화면에 렌더링
-                        formatted_value = item.get('value', '').replace('\n', '<br>')
-                        
-                        html = f"""
-                        <div class="side-slot-card">
-                            <div style="font-size:{item.get('label_fs', 14)}px; color:{item.get('label_color', '#64748b')}; margin-bottom:8px;">{item.get('label', '')}</div>
-                            <div style="font-size:{item.get('value_fs', 28)}px; font-weight:bold; color:{item.get('color', '#007bff')}; line-height:1.5;">{formatted_value}</div>
-                        </div>
-                        """
-                        st.markdown(html, unsafe_allow_html=True)
+                        fv = item.get('value', '').replace('\n', '<br>')
+                        st.markdown(f'<div class="side-slot-card"><div style="font-size:{item.get("label_fs", 14)}px; color:{item.get("label_color", "#64748b")}; margin-bottom:6px;">{item.get("label", "")}</div><div style="font-size:{item.get("value_fs", 28)}px; font-weight:bold; color:{item.get("color", "#007bff")}; line-height:1.5;">{fv}</div></div>', unsafe_allow_html=True)
                         
                     elif item['type'] == "image" and item.get('src'):
-                        html = f"""
-                        <div class="side-slot-card">
-                            <img src="{item['src']}" style="width:{item.get('width', 350)}px; max-width:100%; border-radius:12px; box-shadow: 0 4px 12px rgba(0,0,0,0.08);" />
-                        </div>
-                        """
-                        st.markdown(html, unsafe_allow_html=True)
+                        st.markdown(f'<div class="side-slot-card"><img src="{item["src"]}" style="width:{item.get("width", 350)}px; max-width:100%; border-radius:12px; box-shadow: 0 4px 12px rgba(0,0,0,0.08);" /></div>', unsafe_allow_html=True)
 
 # 실행부
 main_content_area(edit_mode)
