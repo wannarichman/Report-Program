@@ -13,7 +13,7 @@ def get_global_store():
         "report_data": None,
         "current_page": 0,
         "active_users": 0,
-        "user_labels": {}, # {UUID: "참여자 N"} 맵핑 저장
+        "user_labels": {}, # {UUID: "참여자 N"}
         "sync_version": 0,
         "chat_logs": [],
         "voice_channel": "posco_briefing_room"
@@ -21,11 +21,11 @@ def get_global_store():
 
 shared_store = get_global_store()
 
-# --- [개선된 브라우저 고정 ID 동기화 로직] ---
+# --- [개선된 ID 동기화: st.stop 제거 버전] ---
 def sync_user_id():
     js_code = """
     <script>
-    const storageKey = 'posco_report_uid_v2';
+    const storageKey = 'posco_uid_v3';
     let uid = localStorage.getItem(storageKey);
     if (!uid) {
         uid = 'u_' + Math.random().toString(36).substr(2, 9);
@@ -40,27 +40,24 @@ def sync_user_id():
     """
     components.html(js_code, height=0)
 
-# URL에서 ID 즉시 추출
+# 3. [참여자 식별 프로세스]
 browser_uid = st.query_params.get("uid")
 
 if "user_label" not in st.session_state:
     if browser_uid:
-        # 1. 기존 접속 기록 확인
         if browser_uid in shared_store["user_labels"]:
             st.session_state.user_label = shared_store["user_labels"][browser_uid]
         else:
-            # 2. 신규 접속자 번호 부여
             shared_store["active_users"] += 1
             new_label = f"참여자 {shared_store['active_users']}"
             shared_store["user_labels"][browser_uid] = new_label
             st.session_state.user_label = new_label
     else:
-        # ID가 아직 URL에 없다면 자바스크립트 실행 후 대기
+        # ID가 아직 없을 때만 JS 실행하고, 화면은 "준비 중" 표시로 유지
         sync_user_id()
-        st.session_state.user_label = "식별 중..."
-        st.stop() # ID가 생성되어 돌아올 때까지 실행 중단
+        st.session_state.user_label = "식별 중"
 
-# 3. [Agora 음성 컴포넌트]
+# 4. [Agora 음성 컴포넌트]
 def agora_voice_component(app_id, channel, role):
     custom_html = f"""
     <script src="https://download.agora.io/sdk/release/AgoraRTC_N-4.11.0.js"></script>
@@ -119,21 +116,25 @@ with st.sidebar:
     st.title("🎙️ AI Live Sync")
     is_reporter = st.toggle("🔑 보고자 권한 활성화", value=False)
     
-    # 본인 식별 이름 (나) 표시
-    my_name = "📢 보고자 (나)" if is_reporter else f"👤 {st.session_state.user_label} (나)"
-    st.info(f"📍 접속 계정: **{my_name}**")
+    # 본인 식별 이름 표시
+    current_label = st.session_state.user_label
+    my_display = "📢 보고자 (나)" if is_reporter else f"👤 {current_label} (나)"
+    st.info(f"📍 접속 계정: **{my_display}**")
 
     try:
         agora_id = st.secrets["AGORA_APP_ID"]
         agora_voice_component(app_id=agora_id, channel=shared_store["voice_channel"], role="reporter" if is_reporter else "audience")
-    except: st.warning("⚠️ Agora ID 설정 필요")
+    except:
+        st.warning("⚠️ Agora ID 설정 필요")
 
-    with st.expander(f"👥 현재 참여자 ({len(shared_store['user_labels']) + 1}명)", expanded=False):
+    # 참여자 목록
+    with st.expander(f"👥 참여자 명단 ({len(shared_store['user_labels']) + 1}명)", expanded=False):
         st.write(f"- {'**📢 보고자 (나)**' if is_reporter else '📢 보고자'}")
         for label in shared_store["user_labels"].values():
-            if not is_reporter and label == st.session_state.user_label:
+            if not is_reporter and label == current_label:
                 st.write(f"- **👤 {label} (나)**")
-            else: st.write(f"- 👤 {label}")
+            else:
+                st.write(f"- 👤 {label}")
 
     if is_reporter:
         st.divider()
@@ -152,7 +153,7 @@ with st.sidebar:
 # 4. [동기화 엔진]
 @st.fragment(run_every="1s")
 def sync_content_area(edit_enabled):
-    with st.expander("💬 실시간 채팅 및 질의응답", expanded=True):
+    with st.expander("💬 실시간 채팅 및 소통", expanded=True):
         c_col, i_col = st.columns([4, 1])
         with i_col:
             chat_sender = "📢 보고자" if is_reporter else f"👤 {st.session_state.user_label}"
@@ -165,7 +166,7 @@ def sync_content_area(edit_enabled):
             for log in shared_store["chat_logs"][:3]: st.write(log)
 
     if shared_store["report_data"] is None:
-        st.warning("🛰️ 보고서 대기 중...")
+        st.warning("🛰️ 보고서 대기 중... 보고자가 업로드하면 즉시 시작됩니다.")
         return
 
     data = shared_store["report_data"]
@@ -181,6 +182,7 @@ def sync_content_area(edit_enabled):
         if current_tab_idx >= len(tab_labels): current_tab_idx = 0
         st.warning(f"📍 현재 브리핑 위치: **{tab_labels[current_tab_idx]}**")
 
+    # 리포트 본문
     p = data['pages'][current_tab_idx]
     st.divider()
     col_main, col_side = st.columns([2, 1], gap="large")
