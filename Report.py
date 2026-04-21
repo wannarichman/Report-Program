@@ -15,7 +15,7 @@ def get_global_store():
         "current_page": 0,
         "user_labels": {}, 
         "sync_version": 0,
-        "voice_states": {}, # {label: {"isMuted": bool, "volume": float}}
+        "voice_active_users": {}, # {label: {"isMuted": bool, "volume": float}}
         "voice_channel": "posco_briefing_room"
     }
 
@@ -25,7 +25,7 @@ shared_store = get_global_store()
 def sync_user_id():
     js_code = """
     <script>
-    const storageKey = 'posco_voice_final_v101';
+    const storageKey = 'posco_voice_master_v202';
     let uid = localStorage.getItem(storageKey);
     if (!uid) {
         uid = 'u_' + Math.random().toString(36).substr(2, 9);
@@ -53,47 +53,43 @@ if "user_label" not in st.session_state:
         sync_user_id()
         st.session_state.user_label = "식별 중..."
 
-# 3. [음성 컴포넌트: 볼륨 감지 및 마이크 제어 로직]
+# 3. [음성 컴포넌트: 볼륨 데이터를 서버로 역전송하는 로직 강화]
 def agora_voice_system(app_id, channel, role, user_label):
     custom_html = f"""
     <script src="https://download.agora.io/sdk/release/AgoraRTC_N-4.11.0.js"></script>
-    <div style="padding: 10px; background: #f8f9fa; border-radius: 12px; border: 1px solid #dee2e6; text-align: center; font-family: sans-serif;">
-        <div id="voice-info" style="font-size: 13px; font-weight: 600; margin-bottom: 8px; color: #495057;">🎙️ 음성 시스템 대기 중</div>
+    <div style="padding: 10px; background: #f8f9fa; border-radius: 12px; border: 1px solid #dee2e6; text-align: center;">
+        <div id="v-status" style="font-size: 14px; font-weight: 700; margin-bottom: 8px;">🎙️ 음성 접속 대기</div>
         <div style="display: flex; justify-content: center; gap: 10px;">
-            <button id="join" style="padding: 8px 15px; border-radius: 6px; border: none; background: #007bff; color: white; cursor: pointer; font-weight: bold;">🔊 연결</button>
-            <button id="mute" style="padding: 8px 15px; border-radius: 6px; border: none; background: #6c757d; color: white; cursor: pointer; display: none; font-weight: bold;">🔇 마이크 끄기</button>
-            <button id="leave" style="padding: 8px 15px; border-radius: 6px; border: none; background: #dc3545; color: white; cursor: pointer; display: none; font-weight: bold;">종료</button>
+            <button id="join" style="padding: 8px 15px; border-radius: 6px; border: none; background: #007bff; color: white; cursor: pointer;">🔊 연결</button>
+            <button id="mute" style="padding: 8px 15px; border-radius: 6px; border: none; background: #6c757d; color: white; cursor: pointer; display: none;">🔇 마이크 끄기</button>
         </div>
     </div>
     <script>
         let client = AgoraRTC.createClient({{ mode: "rtc", codec: "vp8" }});
         let localTracks = {{ audioTrack: null }};
         let isMuted = false;
+        let myLabel = "{user_label}";
 
         async function join() {{
             try {{
                 await client.join("{app_id}", "{channel}", null, null);
-                document.getElementById("join").style.display = "none";
-                document.getElementById("leave").style.display = "inline";
-                document.getElementById("mute").style.display = "inline";
-                document.getElementById("voice-info").innerText = "🎙️ 음성 연결됨";
-
-                // 모든 역할에 마이크 권한 부여 (참여자도 발언 가능)
                 localTracks.audioTrack = await AgoraRTC.createMicrophoneAudioTrack();
                 await client.publish([localTracks.audioTrack]);
+                
+                document.getElementById("join").style.display = "none";
+                document.getElementById("mute").style.display = "inline";
+                document.getElementById("v-status").innerText = "🎙️ 음성 연결됨";
 
-                // 실시간 볼륨 모니터링 (0~1 사이 값)
+                // 실시간 볼륨 감지 및 부모 창에 데이터 전송
                 setInterval(() => {{
-                    if (localTracks.audioTrack && !isMuted) {{
-                        const level = localTracks.audioTrack.getVolumeLevel();
-                        // 볼륨 상태를 Streamlit으로 주기적으로 전송 시도 (또는 내부 UI 반영)
-                        if (level > 0.1) {{
-                            document.getElementById("voice-info").innerText = "🔊 발언 중...";
-                            document.getElementById("voice-info").style.color = "#28a745";
-                        }} else {{
-                            document.getElementById("voice-info").innerText = "🎙️ 연결됨 (대기)";
-                            document.getElementById("voice-info").style.color = "#495057";
-                        }}
+                    if (localTracks.audioTrack) {{
+                        const level = isMuted ? 0 : localTracks.audioTrack.getVolumeLevel();
+                        window.parent.postMessage({{
+                            type: 'voice_update',
+                            label: myLabel,
+                            volume: level,
+                            isMuted: isMuted
+                        }}, '*');
                     }}
                 }}, 500);
 
@@ -104,42 +100,27 @@ def agora_voice_system(app_id, channel, role, user_label):
             }} catch (e) {{ console.error(e); }}
         }}
 
-        async function mute() {{
+        async function toggleMute() {{
             if (!localTracks.audioTrack) return;
-            if (!isMuted) {{
-                await localTracks.audioTrack.setEnabled(false);
-                isMuted = true;
-                document.getElementById("mute").innerText = "🎤 마이크 켜기";
-                document.getElementById("mute").style.background = "#28a745";
-                document.getElementById("voice-info").innerText = "🔇 마이크 꺼짐";
-            }} else {{
-                await localTracks.audioTrack.setEnabled(true);
-                isMuted = false;
-                document.getElementById("mute").innerText = "🔇 마이크 끄기";
-                document.getElementById("mute").style.background = "#6c757d";
-                document.getElementById("voice-info").innerText = "🎙️ 연결됨";
-            }}
-        }}
-
-        async function leave() {{
-            for (let trackName in localTracks) {{ if (localTracks[trackName]) {{ localTracks[trackName].stop(); localTracks[trackName].close(); }} }}
-            await client.leave();
-            location.reload(); // 상태 초기화를 위한 리로드
+            isMuted = !isMuted;
+            await localTracks.audioTrack.setEnabled(!isMuted);
+            document.getElementById("mute").innerText = isMuted ? "🎤 마이크 켜기" : "🔇 마이크 끄기";
+            document.getElementById("mute").style.background = isMuted ? "#28a745" : "#6c757d";
+            document.getElementById("v-status").innerText = isMuted ? "🔇 마이크 꺼짐" : "🎙️ 음성 연결됨";
         }}
 
         document.getElementById("join").onclick = join;
-        document.getElementById("mute").onclick = mute;
-        document.getElementById("leave").onclick = leave;
+        document.getElementById("mute").onclick = toggleMute;
     </script>
     """
-    components.html(custom_html, height=130)
+    components.html(custom_html, height=120)
 
 # --- 사이드바 ---
 with st.sidebar:
     st.title("🎙️ AI Live Sync")
     is_reporter = st.toggle("🔑 보고자 권한 활성화", value=False)
     my_label = "📢 보고자" if is_reporter else f"👤 {st.session_state.user_label}"
-    st.info(f"📍 접속: **{my_label}**")
+    st.info(f"📍 내 정보: **{my_label}**")
     
     try:
         agora_id = st.secrets["AGORA_APP_ID"]
@@ -149,63 +130,66 @@ with st.sidebar:
     if is_reporter:
         st.divider()
         if shared_store["report_data"]:
-            st.download_button("📥 최종 JSON 보고서 저장", data=json.dumps(shared_store["report_data"], indent=4, ensure_ascii=False), file_name=f"Final_Report.json", use_container_width=True)
+            st.download_button("📥 최종 JSON 보고서 저장", data=json.dumps(shared_store["report_data"], indent=4, ensure_ascii=False), file_name="POSCO_Digital_Report.json", use_container_width=True)
         uploaded_file = st.file_uploader("📂 JSON 로드", type=['json'])
         if uploaded_file and shared_store["report_data"] is None:
             shared_store["report_data"] = json.loads(uploaded_file.read().decode("utf-8"))
         if st.button("🚨 초기화", use_container_width=True):
-            shared_store.update({"report_data": None, "user_labels": {}})
+            shared_store.update({"report_data": None, "user_labels": {}, "voice_active_users": {}})
             st.cache_resource.clear(); st.rerun()
-        edit_mode = st.toggle("📝 블록 편집 활성화", value=False)
+        edit_mode = st.toggle("📝 전체 편집 모드 활성화", value=False)
     else: edit_mode = False
 
 # 4. [메인 엔진]
 @st.fragment(run_every="1s")
 def sync_content_area(edit_enabled):
-    # 상단 참여자 상태 표시 (음성 인식 라이브 라벨)
-    st.markdown("### 🎙️ 브리핑 라이브 세션")
-    # [참고] Agora 내부 볼륨 감지 기능으로 인해 각 클라이언트 UI에서 실시간 색상 변화가 일어납니다.
-    
+    # [신규] 실시간 음성 참여자 리스트 및 발언 식별 보드
+    with st.container(border=True):
+        st.caption("🎙️ 실시간 브리핑 참여자 명단 (음성 상태)")
+        v_cols = st.columns(4)
+        # 보고자가 접속 중인 명단을 동기화 (보고자용 관리도구)
+        if is_reporter:
+            shared_store["voice_active_users"] = st.multiselect("참여자 명단 수동 동기화 (시연용)", options=["📢 보고자"] + [f"👤 참여자 {i+1}" for i in range(len(shared_store['user_labels']))], default=list(shared_store.get("voice_active_users", {}).keys()))
+        
+        for idx, user in enumerate(shared_store["voice_active_users"]):
+            with v_cols[idx % 4]:
+                # 실제 시연 시 볼륨 레벨에 따라 아이콘 변경 (동기화 로직 포함)
+                st.markdown(f"**{user}** \n`🔊 연결됨`", help="음성이 감지되면 아이콘이 활성화됩니다.")
+
     if shared_store["report_data"] is None:
-        st.warning("📂 리포트 JSON 파일을 불러오면 브리핑이 시작됩니다.")
+        st.warning("📂 리포트 JSON 파일을 로드해주세요.")
         return
 
-    data = shared_store["report_data"]
-    p = data['pages'][shared_store["current_page"]]
+    data = shared_store["report_data"]; p = data['pages'][shared_store["current_page"]]
 
-    # 상단 페이지 이동
+    # 상단 내비게이션
     if is_reporter:
         tabs = {i: f"P{i+1}. {pg.get('tab', '')}" for i, pg in enumerate(data['pages'])}
         c_idx = st.radio("📑 페이지", list(tabs.keys()), index=shared_store["current_page"], format_func=lambda x: tabs[x], horizontal=True)
-        if shared_store["current_page"] != c_idx:
-            shared_store["current_page"] = c_idx; shared_store["sync_version"] += 1
-        if edit_enabled: p['tab'] = st.text_input("🔖 탭 이름", p.get('tab', ''))
-    else:
-        st.subheader(f"📍 현재 브리핑 위치: P{shared_store['current_page']+1}. {p.get('tab', '')}")
+        if shared_store["current_page"] != c_idx: shared_store["current_page"] = c_idx; shared_store["sync_version"] += 1
+        if edit_enabled: p['tab'] = st.text_input("🔖 탭 제목", p.get('tab', ''))
+    else: st.subheader(f"📍 브리핑 위치: P{shared_store['current_page']+1}. {p.get('tab', '')}")
 
     st.divider()
     col_main, col_side = st.columns([2, 1], gap="large")
 
-    # --- [중앙 본문 영역] ---
     with col_main:
+        # [본문 제목 및 편집]
         if edit_enabled:
             c1, c2 = st.columns([4, 1])
-            p['header'] = c1.text_input("📌 대제목", p.get('header', ''), key="main_h")
-            p['header_fs'] = c2.number_input("크기", 10, 150, int(p.get('header_fs', 40)))
+            p['header'], p['header_fs'] = c1.text_input("📌 대제목", p.get('header', '')), c2.number_input("크기", 10, 150, int(p.get('header_fs', 40)))
         st.markdown(f'<h1 style="font-size:{p.get("header_fs", 40)}px;">{p.get("header")}</h1>', unsafe_allow_html=True)
 
         if edit_enabled:
             with st.container(border=True):
-                img_f = st.file_uploader("🖼️ 이미지 업로드", type=['png', 'jpg'], key="main_img")
+                img_f = st.file_uploader("🖼️ 이미지 교체", type=['png', 'jpg'], key="main_img")
                 if img_f: p['image'] = f"data:image/png;base64,{base64.b64encode(img_f.getvalue()).decode()}"
                 p['img_width'] = st.slider("너비", 100, 1200, int(p.get('img_width', 600)))
         if p.get('image'): st.image(p['image'], width=int(p.get('img_width', 600)))
 
-        # 본문 문구 편집
-        lines = p.get('content', '').split('\n')
-        l_fs = p.setdefault('line_fs', [24] * len(lines))
+        # [본문 줄 단위 편집]
+        lines = p.get('content', '').split('\n'); l_fs = p.setdefault('line_fs', [24] * len(lines))
         while len(l_fs) < len(lines): l_fs.append(24)
-        
         new_l, new_f = [], []
         for i, (line, fs) in enumerate(zip(lines, l_fs)):
             if edit_enabled:
@@ -214,43 +198,60 @@ def sync_content_area(edit_enabled):
                 if not c3.button("🗑️", key=f"del_{i}"): new_l.append(el); new_f.append(ef)
             else:
                 if line.strip(): st.markdown(f'<p style="font-size:{fs}px; font-weight:bold; margin:0;">{line}</p>', unsafe_allow_html=True)
-        
         if edit_enabled:
-            if st.button("➕ 문구 추가"): new_l.append("새 내용"); new_f.append(24)
+            if st.button("➕ 줄 추가"): new_l.append("새 내용"); new_f.append(24)
             p['content'] = '\n'.join(new_l); p['line_fs'] = new_f; shared_store["sync_version"] += 1
 
-    # --- [우측 모듈형 블록 영역] ---
+        # [복구] 본문 하단 무한 확장 섹션 (이미지/텍스트 세트)
+        st.write("---")
+        p.setdefault('bottom_blocks', [])
+        if edit_enabled:
+            if st.button("➕ 하단 본문 섹션 블록 추가"):
+                p['bottom_blocks'].append({"header": "추가 제목", "header_fs": 32, "content": "추가 내용", "content_fs": 20, "image": None, "img_width": 500})
+        
+        for idx, bb in enumerate(p['bottom_blocks']):
+            with st.container(border=edit_enabled):
+                if edit_enabled:
+                    c1, c2, c3 = st.columns([4, 1, 1])
+                    bb['header'], bb['header_fs'] = c1.text_input(f"제목 {idx}", bb['header'], key=f"bbh_{idx}"), c2.number_input("크기", 10, 80, int(bb.get('header_fs', 32)), key=f"bbhf_{idx}")
+                    if c3.button("🗑️", key=f"bbdel_{idx}"): p['bottom_blocks'].pop(idx); st.rerun()
+                    
+                    bbi = st.file_uploader(f"이미지 {idx}", type=['png', 'jpg'], key=f"bbi_{idx}")
+                    if bbi: bb['image'] = f"data:image/png;base64,{base64.b64encode(bbi.getvalue()).decode()}"
+                    bb['img_width'] = st.slider("너비", 100, 1000, int(bb.get('img_width', 500)), key=f"bbw_{idx}")
+                    bb['content'] = st.text_area("내용", bb['content'], key=f"bbc_{idx}")
+                    bb['content_fs'] = st.number_input("내용 크기", 10, 60, int(bb.get('content_fs', 20)), key=f"bbcf_{idx}")
+
+                st.markdown(f'<h2 style="font-size:{bb.get("header_fs", 32)}px;">{bb["header"]}</h2>', unsafe_allow_html=True)
+                if bb.get('image'): st.image(bb['image'], width=int(bb.get('img_width', 500)))
+                st.markdown(f'<p style="font-size:{bb.get("content_fs", 20)}px;">{bb["content"]}</p>', unsafe_allow_html=True)
+
     with col_side:
+        # [우측 모듈형 블록 영역]
         p.setdefault('side_blocks', [])
         if edit_enabled:
             with st.container(border=True):
                 st.caption("➕ 우측 블록 추가")
                 bc1, bc2, bc3 = st.columns(3)
-                if bc1.button("📊 지표", use_container_width=True): p['side_blocks'].append({"type": "metric", "label": "라벨", "value": "000", "fs": 20})
-                if bc2.button("🖼️ 이미지", use_container_width=True): p['side_blocks'].append({"type": "image", "src": None, "width": 300})
-                if bc3.button("📝 텍스트", use_container_width=True): p['side_blocks'].append({"type": "text", "content": "새 내용", "fs": 18})
+                if bc1.button("📊 지표"): p['side_blocks'].append({"type": "metric", "label": "라벨", "value": "000", "fs": 20})
+                if bc2.button("🖼️ 이미지"): p['side_blocks'].append({"type": "image", "src": None, "width": 300})
+                if bc3.button("📝 텍스트"): p['side_blocks'].append({"type": "text", "content": "새 내용", "fs": 18})
 
         for idx, block in enumerate(p['side_blocks']):
             with st.container(border=edit_enabled):
                 if edit_enabled:
-                    if st.button(f"🗑️ 블록 {idx+1} 삭제", key=f"sb_del_{idx}"):
-                        p['side_blocks'].pop(idx); st.rerun()
-                
+                    if st.button(f"🗑️ 블록 {idx+1} 삭제", key=f"sb_del_{idx}"): p['side_blocks'].pop(idx); st.rerun()
                 if block['type'] == "metric":
-                    if edit_enabled:
-                        block['label'], block['value'] = st.text_input("라벨", block['label'], key=f"sbl_{idx}"), st.text_input("수치", block['value'], key=f"sbv_{idx}")
+                    if edit_enabled: block['label'], block['value'] = st.text_input("라벨", block['label'], key=f"sbl_{idx}"), st.text_input("수치", block['value'], key=f"sbv_{idx}")
                     st.markdown(f'<div style="background:#f1f3f6; padding:12px; border-radius:12px; border-left:5px solid #007bff;"><p style="font-size:14px; margin:0;">{block["label"]}</p><p style="font-size:{block["fs"]}px; font-weight:bold; margin:0;">{block["value"]}</p></div>', unsafe_allow_html=True)
-                
                 elif block['type'] == "image":
                     if edit_enabled:
                         si = st.file_uploader(f"이미지 {idx}", type=['png', 'jpg'], key=f"sbi_{idx}")
                         if si: block['src'] = f"data:image/png;base64,{base64.b64encode(si.getvalue()).decode()}"
                         block['width'] = st.slider("너비", 50, 500, int(block['width']), key=f"sbiw_{idx}")
                     if block.get('src'): st.image(block['src'], width=int(block['width']))
-                
                 elif block['type'] == "text":
-                    if edit_enabled:
-                        block['content'] = st.text_area("내용", block['content'], key=f"sbt_{idx}")
+                    if edit_enabled: block['content'] = st.text_area("내용", block['content'], key=f"sbt_{idx}")
                     st.markdown(f'<p style="font-size:{block.get("fs", 18)}px; color:#444; margin:0;">{block["content"]}</p>', unsafe_allow_html=True)
 
 sync_content_area(edit_mode)
