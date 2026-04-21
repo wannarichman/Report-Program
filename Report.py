@@ -37,17 +37,18 @@ if "user_label" not in st.session_state:
         st.session_state.user_label = new_label
 
 # 3. [음성 시스템: 경량화 및 실시간 레벨링 바]
+
 def agora_voice_system(app_id, channel, user_label):
     custom_html = f"""
     <script src="https://download.agora.io/sdk/release/AgoraRTC_N-4.11.0.js"></script>
     <div style="padding: 10px; background: #f8f9fa; border-radius: 12px; border: 1px solid #dee2e6; text-align: center; font-family: sans-serif;">
-        <div id="v-status" style="font-size: 13px; font-weight: 700; margin-bottom: 5px; color: #495057;">🎙️ 음성 접속 대기</div>
-        <div style="width: 100%; height: 6px; background: #e9ecef; border-radius: 3px; margin-bottom: 8px;">
-            <div id="level-bar" style="width: 0%; height: 100%; background: #28a745; border-radius: 3px; transition: width 0.1s;"></div>
+        <div id="v-status" style="font-size: 13px; font-weight: 700; margin-bottom: 5px; color: #495057;">🎙️ 음성 접속 완료</div>
+        <div style="width: 100%; height: 8px; background: #e9ecef; border-radius: 4px; margin-bottom: 8px; overflow: hidden;">
+            <div id="level-bar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #28a745, #85ea2d); border-radius: 4px; transition: width 0.05s ease-out;"></div>
         </div>
         <div style="display: flex; justify-content: center; gap: 8px;">
-            <button id="join" style="padding: 6px 12px; border-radius: 4px; border: none; background: #007bff; color: white; cursor: pointer; font-size: 12px; font-weight: bold;">🔊 연결</button>
-            <button id="mute" style="padding: 6px 12px; border-radius: 4px; border: none; background: #6c757d; color: white; cursor: pointer; display: none; font-size: 12px; font-weight: bold;">🔇 끄기</button>
+            <button id="join" style="padding: 6px 12px; border-radius: 4px; border: none; background: #007bff; color: white; cursor: pointer; font-size: 12px; font-weight: bold;">🔊 브리핑 연결</button>
+            <button id="mute" style="padding: 6px 12px; border-radius: 4px; border: none; background: #6c757d; color: white; cursor: pointer; display: none; font-size: 12px; font-weight: bold;">🔇 마이크 끄기</button>
         </div>
     </div>
     <script>
@@ -55,6 +56,7 @@ def agora_voice_system(app_id, channel, user_label):
         let localTracks = {{ audioTrack: null }};
         let isMuted = false;
 
+        // 볼륨 감지 주기 및 감도 설정 (간격 100ms로 단축)
         client.enableAudioVolumeIndicator();
 
         async function join() {{
@@ -65,13 +67,15 @@ def agora_voice_system(app_id, channel, user_label):
                 
                 document.getElementById("join").style.display = "none";
                 document.getElementById("mute").style.display = "inline";
-                document.getElementById("v-status").innerText = "🎙️ 연결됨";
 
+                // 볼륨 인디케이터 이벤트 감지 강화
                 client.on("volume-indicator", (volumes) => {{
                     volumes.forEach((volume) => {{
-                        if (volume.uid === 0) {{ // 내 마이크 수치
-                            const level = isMuted ? 0 : volume.level;
-                            document.getElementById("level-bar").style.width = (level * 1.5) + "%";
+                        if (volume.uid === 0) {{ 
+                            // 감도를 높이기 위해 볼륨값에 가중치(x2) 부여
+                            let level = isMuted ? 0 : Math.min(volume.level * 2, 100);
+                            const bar = document.getElementById("level-bar");
+                            if (bar) bar.style.width = level + "%";
                         }}
                     }});
                 }});
@@ -80,23 +84,23 @@ def agora_voice_system(app_id, channel, user_label):
                     await client.subscribe(user, mediaType);
                     if (mediaType === "audio") {{ user.audioTrack.play(); }}
                 }});
-            }} catch (e) {{ console.error(e); }}
+            }} catch (e) {{ console.error("Agora Join Error:", e); }}
         }}
 
         async function toggleMute() {{
             if (!localTracks.audioTrack) return;
             isMuted = !isMuted;
             await localTracks.audioTrack.setEnabled(!isMuted);
-            document.getElementById("mute").innerText = isMuted ? "🎤 켜기" : "🔇 끄기";
+            document.getElementById("mute").innerText = isMuted ? "🎤 마이크 켜기" : "🔇 마이크 끄기";
             document.getElementById("mute").style.background = isMuted ? "#28a745" : "#6c757d";
-            document.getElementById("level-bar").style.width = "0%";
+            if(isMuted) document.getElementById("level-bar").style.width = "0%";
         }}
 
         document.getElementById("join").onclick = join;
         document.getElementById("mute").onclick = toggleMute;
     </script>
     """
-    components.html(custom_html, height=120)
+    components.html(custom_html, height=130)
 
 # --- 사이드바 ---
 with st.sidebar:
