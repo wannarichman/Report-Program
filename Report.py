@@ -21,11 +21,11 @@ def get_global_store():
 
 shared_store = get_global_store()
 
-# --- [ID 동기화 로직] ---
+# [ID 동기화 로직]
 def sync_user_id():
     js_code = """
     <script>
-    const storageKey = 'posco_uid_final_v10';
+    const storageKey = 'posco_uid_final_v11';
     let uid = localStorage.getItem(storageKey);
     if (!uid) {
         uid = 'u_' + Math.random().toString(36).substr(2, 9);
@@ -127,11 +127,10 @@ with st.sidebar:
             st.cache_resource.clear()
             st.rerun()
         
-        uploaded_file = st.file_uploader("JSON 업로드", type=['json', 'js'], key="uploader_v10")
+        uploaded_file = st.file_uploader("JSON 업로드", type=['json', 'js'], key="uploader_v11")
         if uploaded_file:
             try:
                 content = json.loads(uploaded_file.read().decode("utf-8"))
-                # [범용성 보장] 외부 JSON 로드 시 가시성 속성 자동 주입
                 for p in content.get('pages', []):
                     p.setdefault('show_p', True)
                     p.setdefault('show_img', True)
@@ -142,7 +141,7 @@ with st.sidebar:
                 if shared_store["report_data"] is None:
                     shared_store["report_data"] = content
                     shared_store["sync_version"] += 1
-            except Exception as e: st.error(f"JSON 형식 오류: {e}")
+            except Exception as e: st.error(f"JSON 형식 오류")
         
         current_edit_mode = st.toggle("📝 실시간 편집 모드", value=False)
 
@@ -182,29 +181,21 @@ def sync_content_area(edit_enabled):
     p = data['pages'][current_tab_idx]
     st.divider()
     
-    # [편집 인터페이스] 탭 제목 및 가시성 제어
+    # [편집 인터페이스]
     if is_reporter and edit_enabled:
-        col_t1, col_t2 = st.columns([3, 1])
-        with col_t1:
-            p['tab'] = st.text_input("🔖 탭(P1) 제목 수정", p.get('tab', ''), key=f"tab_edit_{current_tab_idx}")
-        with col_t2:
-            st.write("👁️ 가시성 제어")
-            p['show_p'] = st.checkbox("페이지 노출", value=p.get('show_p', True), key=f"sp_{current_tab_idx}")
-            shared_store["sync_version"] += 1
+        p['tab'] = st.text_input("🔖 상단 탭 이름", p.get('tab', ''), key=f"t_{current_tab_idx}")
+        p['header'] = st.text_input("📌 대제목 (PPT/Word 보고의 단점 등)", p.get('header', ''), key=f"h_{current_tab_idx}")
+        shared_store["sync_version"] += 1
 
     col_main, col_side = st.columns([2, 1], gap="large")
     
     with col_main:
-        if is_reporter and edit_enabled:
-            # [기능] 'PPT 보고의 단점' 같은 대제목 수정창
-            p['header'] = st.text_input("📌 리포트 대제목(Header) 수정", p.get('header', ''), key=f"h_{current_tab_idx}")
-            
-            c_v1, c_v2 = st.columns(2)
-            p['show_img'] = c_v1.checkbox("🖼️ 그림 표시", value=p.get('show_img', True), key=f"si_{current_tab_idx}")
-            p['show_txt'] = c_v2.checkbox("📄 본문 표시", value=p.get('show_txt', True), key=f"st_{current_tab_idx}")
-            shared_store["sync_version"] += 1
-        
-        st.markdown(f"# {p.get('header', '')}")
+        # 제목 렌더링 (마크다운 지원)
+        header_text = p.get('header', '')
+        if header_text.startswith('#'):
+            st.markdown(header_text)
+        else:
+            st.markdown(f"# {header_text}")
         
         if p.get('show_img', True) and "image" in p: 
             st.image(p["image"], use_container_width=True)
@@ -212,16 +203,24 @@ def sync_content_area(edit_enabled):
         if p.get('show_txt', True):
             content_lines = p.get('content', '').split('\n')
             new_lines = []
-            for i, line in enumerate(content_lines):
-                if is_reporter and edit_enabled:
-                    edited_line = st.text_input(f"L{i+1}", line, key=f"line_{current_tab_idx}_{i}")
-                    new_lines.append(edited_line)
-                else:
-                    if line.strip(): st.markdown(f"### {line.strip()}")
             
             if is_reporter and edit_enabled:
-                if st.button("➕ 아래에 내용 추가", key=f"add_{current_tab_idx}"):
-                    new_lines.append("새로운 내용을 입력하세요.")
+                st.caption("💡 팁: #은 크게, ##은 중간, ###은 작게 (마크다운 문법)")
+            
+            for i, line in enumerate(content_lines):
+                if is_reporter and edit_enabled:
+                    # 줄별 편집창
+                    edited_line = st.text_input(f"줄 {i+1} 편집", line, key=f"line_{current_tab_idx}_{i}")
+                    new_lines.append(edited_line)
+                else:
+                    # 마크다운 렌더링 (글자 크기 조절 반영)
+                    if line.strip():
+                        if line.startswith('#'): st.markdown(line)
+                        else: st.markdown(f"### {line}")
+            
+            if is_reporter and edit_enabled:
+                if st.button("➕ 줄 추가", key=f"add_{current_tab_idx}"):
+                    new_lines.append("새로운 내용")
                     shared_store["sync_version"] += 1
                 p['content'] = '\n'.join(new_lines)
                 shared_store["sync_version"] += 1
