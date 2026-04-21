@@ -31,9 +31,9 @@ with st.sidebar:
     is_reporter = st.toggle("🔑 보고자 권한 활성화", value=False)
     st.success(f"👥 접속: **{shared_store['active_users']}명**")
     
-    # 음성 스트리머
+    # 음성 스트리머 (본문 갱신과 분리되어 끊김 없음)
     webrtc_streamer(
-        key="posco-v-final-audio-v2",
+        key="posco-v-final-audio-v3",
         mode=WebRtcMode.SENDRECV,
         rtc_configuration=RTC_CONFIG,
         media_stream_constraints={"video": False, "audio": True},
@@ -45,7 +45,7 @@ with st.sidebar:
         st.cache_resource.clear()
         st.rerun()
 
-    # 보고자 전용 컨트롤러
+    # 보고자 컨트롤러
     current_edit_mode = False
     if is_reporter:
         st.divider()
@@ -63,7 +63,7 @@ with st.sidebar:
         
         current_edit_mode = st.toggle("📝 실시간 편집 모드", value=False)
 
-# 4. [동기화 엔진] 편집 모드 상태를 인자로 전달하여 작동 보장
+# 4. [동기화 엔진] 탭 제목 수정을 포함한 본문 갱신
 @st.fragment(run_every="1s")
 def sync_content_area(edit_enabled):
     if shared_store["report_data"] is None:
@@ -71,6 +71,8 @@ def sync_content_area(edit_enabled):
         return
 
     data = shared_store["report_data"]
+    
+    # [수정] 실시간으로 반영된 탭 이름을 가져와서 레이블 생성
     tab_labels = [f"P{i+1}. {p.get('tab', '')}" for i, p in enumerate(data['pages'])]
     
     # --- 페이지 이동 로직 ---
@@ -78,6 +80,7 @@ def sync_content_area(edit_enabled):
         col_ctrl, col_save = st.columns([4, 1])
         with col_ctrl:
             prev_p = shared_store["current_page"]
+            # 탭 이동 컨트롤
             current_tab_idx = st.radio("📑 페이지 이동", range(len(tab_labels)), 
                                        index=shared_store["current_page"],
                                        format_func=lambda x: tab_labels[x], horizontal=True)
@@ -99,15 +102,20 @@ def sync_content_area(edit_enabled):
     
     with col_main:
         if is_reporter and edit_enabled:
-            # 제목 및 본문 편집
-            p['header'] = st.text_input("제목 수정", p.get('header', ''), key=f"edit_h_{current_tab_idx}")
-            p['content'] = st.text_area("본문 수정", p.get('content', ''), height=250, key=f"edit_c_{current_tab_idx}")
+            # 1. 탭 이름 수정 (P1, P2 등 표시 텍스트)
+            new_tab_name = st.text_input("🔖 탭 이름 수정 (P1, P2...)", p.get('tab', ''), key=f"edit_t_{current_tab_idx}")
+            if new_tab_name != p.get('tab'):
+                p['tab'] = new_tab_name
+                shared_store["sync_version"] += 1
+
+            # 2. 제목 및 본문 편집
+            p['header'] = st.text_input("📌 제목 수정", p.get('header', ''), key=f"edit_h_{current_tab_idx}")
+            p['content'] = st.text_area("📄 본문 수정", p.get('content', ''), height=250, key=f"edit_c_{current_tab_idx}")
             
-            # 이미지 크기 조절 추가
+            # 3. 이미지 크기 조절
             if 'img_width' not in p: p['img_width'] = 800
-            p['img_width'] = st.slider("그림 크기 조절", 200, 1200, int(p['img_width']), key=f"edit_i_{current_tab_idx}")
+            p['img_width'] = st.slider("🖼️ 그림 크기 조절", 200, 1200, int(p['img_width']), key=f"edit_i_{current_tab_idx}")
             
-            # 수정 사항이 있으면 동기화 버전 업
             shared_store["sync_version"] += 1
         
         st.markdown(f"# {p.get('header', '')}")
@@ -119,16 +127,16 @@ def sync_content_area(edit_enabled):
     with col_side:
         if 'metrics_title' not in p: p['metrics_title'] = "📊 주요 지표"
         if is_reporter and edit_enabled:
-            p['metrics_title'] = st.text_input("지표 섹션 제목", p['metrics_title'], key=f"edit_mt_{current_tab_idx}")
+            p['metrics_title'] = st.text_input("📊 지표 섹션 제목", p['metrics_title'], key=f"edit_mt_{current_tab_idx}")
         
         st.subheader(p['metrics_title'])
         if "metrics" in p:
             for idx, m in enumerate(p['metrics']):
                 if is_reporter and edit_enabled:
-                    m[0] = st.text_input(f"라벨{idx}", m[0], key=f"ml_{current_tab_idx}_{idx}")
+                    m[0] = st.text_input(f"항목{idx}", m[0], key=f"ml_{current_tab_idx}_{idx}")
                     m[1] = st.text_input(f"수치{idx}", m[1], key=f"mv_{current_tab_idx}_{idx}")
                     shared_store["sync_version"] += 1
                 st.metric(label=m[0], value=m[1], delta=m[2] if len(m)>2 else None)
 
-# 실행 (현재 편집 모드 상태를 넘겨줌)
+# 실행
 sync_content_area(current_edit_mode)
