@@ -99,7 +99,7 @@ def get_global_store():
         "current_page": 0, 
         "user_labels": {}, 
         "chat_history": [], 
-        "active_sessions": {}, # {uid: {"label": label, "last_seen": timestamp}} 명단 버그 해결용
+        "active_sessions": {}, # {uid: {"label": label, "last_seen": timestamp}}
         "voice_channel": "posco_briefing_room"
     }
 
@@ -139,14 +139,14 @@ def adapt_json_format(raw_data):
     return {"pages": [create_empty_page()]}
 
 # ==========================================
-# 4. ID 식별 및 음성 시스템
+# 4. ID 식별 및 음성 시스템 (Agora)
 # ==========================================
 if "uid" not in st.session_state:
     st.session_state.uid = st.query_params.get("uid", f"u_{int(time.time()*1000)}")
     st.query_params["uid"] = st.session_state.uid
 
 if "user_label" not in st.session_state:
-    # 현재 활성 세션(10초 이내)을 기준으로 참여자 번호 부여
+    # 현재 활성 세션을 기준으로 라벨 부여
     active_now = len([s for s in shared_store["active_sessions"].values() if time.time() - s["last_seen"] < 10])
     label = f"참여자 {active_now + 1}"
     st.session_state.user_label = label
@@ -217,25 +217,13 @@ def agora_voice_system(app_id, channel, user_label):
     """
     components.html(custom_html, height=150)
 
-# ==========================================
-# 5. 사이드바 (Sidebar) 통제 센터
-# ==========================================
-with st.sidebar:
-    st.title("🎙️ AI Live Sync")
-    is_reporter = st.toggle("🔑 보고자 권한 (편집기능 활성화)", value=False)
-    my_label = "📢 보고자" if is_reporter else f"👤 {st.session_state.user_label}"
-    
-    try:
-        agora_id = st.secrets["AGORA_APP_ID"]
-        agora_voice_system(agora_id, shared_store["voice_channel"], my_label)
-    except: 
-        st.warning("⚠️ Agora ID가 설정되지 않았습니다.")
-
-    # [수정됨] 실시간 동시 접속자만 표시 (누적 방지)
+# [추가] 사이드바 명단 전용 실시간 갱신 프래그먼트
+@st.fragment(run_every="1s")
+def sync_member_list():
     with st.container(border=True):
         st.caption("👥 실시간 접속 멤버")
         now = time.time()
-        # 6초 이내에 하트비트 신호가 있는 세션만 필터링
+        # 6초 이내 신호가 있는 세션만 필터링 (유령 참여자 방지)
         active_list = [
             info["label"] for uid, info in shared_store["active_sessions"].items()
             if now - info["last_seen"] < 6
@@ -244,12 +232,28 @@ with st.sidebar:
         if not active_list:
             st.write("접속자 없음")
         else:
-            for user in sorted(list(set(active_list))): # 중복 제거 및 정렬
+            for user in sorted(list(set(active_list))):
                 st.markdown(f"🟢 **{user}**")
+
+# ==========================================
+# 5. 사이드바 (Sidebar) 통제 센터
+# ==========================================
+with st.sidebar:
+    st.title("🎙️ 음성 발표")
+    is_reporter = st.toggle("🔑 보고자 권한 (편집기능 활성화)", value=False)
+    my_label = "📢 보고자" if is_reporter else f"👤 {st.session_state.user_label}"
+    
+    try:
+        agora_id = st.secrets["AGORA_APP_ID"]
+        agora_voice_system(agora_id, shared_store["voice_channel"], my_label)
+    except: 
+        st.warning("⚠️ Agora ID 설정 필요")
+
+    # [수정] 프래그먼트 호출로 실시간성 확보
+    sync_member_list()
 
     if is_reporter:
         st.divider()
-        
         st.download_button(
             label="📘 보고서 표준 양식 다운로드",
             data=json.dumps(get_sample_json_guide(), indent=4, ensure_ascii=False),
@@ -257,7 +261,7 @@ with st.sidebar:
             mime="application/json",
             use_container_width=True
         )
-        st.caption("💡 **Tip:** 위 표준 양식을 다운받아 제미나이(AI)에게 첨부한 뒤, *'이 JSON 양식에 맞춰서 OO에 대한 보고서를 작성해 줘'* 라고 요청해 보세요.")
+        st.caption("💡 **Tip:** 위 표준 양식을 AI에게 주고 내용을 채워달라고 하세요.")
         
         st.write("---")
         uploaded_file = st.file_uploader("📂 JSON 로드 (작업본 불러오기)", type=['json'])
@@ -289,7 +293,7 @@ with st.sidebar:
 # ==========================================
 @st.fragment(run_every="1s")
 def main_content_area(edit_enabled):
-    # [수정됨] 하트비트 갱신: 1초마다 내 활동 정보를 서버 저장소에 업데이트
+    # [핵심] 하트비트 갱신: 본인의 접속 정보를 1초마다 서버에 기록
     shared_store["active_sessions"][st.session_state.uid] = {
         "label": my_label,
         "last_seen": time.time()
