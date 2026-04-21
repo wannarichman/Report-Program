@@ -12,7 +12,7 @@ st.markdown("""
     /* 앱 전체 배경을 깨끗한 흰색으로 */
     [data-testid="stAppViewContainer"] { background-color: #ffffff !important; }
     
-    /* 메인 화면 컨테이너: 심플하고 세련된 얇은 테두리와 은은한 그림자 */
+    /* 메인 화면 섹션 컨테이너: 전체를 묶어주는 얇고 세련된 테두리와 그림자 */
     .main [data-testid="stVerticalBlockBorderWrapper"] {
         background-color: #ffffff !important;
         border: 1px solid #dee2e6 !important; 
@@ -25,12 +25,6 @@ st.markdown("""
     /* 사이드바 내부 컨테이너 레이아웃 유지 */
     [data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"] {
         border: 1px solid #dee2e6 !important; padding: 15px !important; box-shadow: none !important; margin-bottom: 10px !important;
-    }
-    
-    /* 우측 사이드 슬롯: 파란 테두리 없이 심플한 박스 유지 */
-    .side-slot-card {
-        background-color: #f8f9fa; padding: 20px; border-radius: 12px;
-        border: 1px solid #e9ecef; margin-bottom: 16px;
     }
     
     .text-line { white-space: pre-wrap; word-wrap: break-word; line-height: 1.8; margin-bottom: 10px; color: #334155; }
@@ -53,7 +47,7 @@ shared_store = get_global_store()
 def create_empty_page():
     return {
         "tab": "새 페이지", "header": "제목을 입력하세요", "header_fs": 45, "header_color": "#1a1c1e",
-        "sections": [{"title": "새로운 분석 섹션", "title_fs": 32, "title_color": "#1a1c1e", "lines": [{"text": "내용을 입력하세요", "size": 22, "color": "#1e293b"}], "main_image": None, "full_width": True, "side_items": []}]
+        "sections": [{"title": "새로운 분석 섹션", "title_fs": 32, "title_color": "#1a1c1e", "col_ratio": 2.0, "lines": [{"text": "내용을 입력하세요", "size": 22, "color": "#1e293b"}], "main_image": None, "full_width": True, "side_items": []}]
     }
 
 def adapt_json_format(raw_data):
@@ -172,24 +166,23 @@ def main_content_area(edit_enabled):
     # --- [섹션 루프] ---
     sections = p.setdefault('sections', [])
     if edit_enabled and st.button("➕ 새로운 세로 섹션 뭉치 추가", key=f"add_sec_{shared_store['current_page']}"):
-        sections.append({"title": "새 섹션", "title_fs": 32, "title_color": "#1a1c1e", "lines": [{"text": "내용", "size": 22, "color": "#1e293b"}], "main_image": None, "full_width": True, "side_items": []})
+        sections.append({"title": "새 섹션", "title_fs": 32, "title_color": "#1a1c1e", "col_ratio": 2.0, "lines": [{"text": "내용", "size": 22, "color": "#1e293b"}], "main_image": None, "full_width": True, "side_items": []})
         st.rerun()
 
     for s_idx, sec in enumerate(sections):
         with st.container(border=True): 
             
-            # [핵심 1] 섹션 제목을 칼럼 분리 전 최상단으로 이동 (전체 너비 차지)
             if edit_enabled:
-                sc1, sc2, sc3 = st.columns([2, 1, 1])
-                sec['title'] = sc1.text_input(f"섹션 {s_idx+1} 제목", sec.get('title', ''), key=f"st_{shared_store['current_page']}_{s_idx}")
-                sec['title_fs'] = sc2.slider("제목 크기", 10, 80, int(sec.get('title_fs', 32)), key=f"stfs_{shared_store['current_page']}_{s_idx}")
+                sc1, sc2, sc3, sc4 = st.columns([2.5, 1, 1, 1.5])
+                sec['title'] = sc1.text_input("섹션 제목", sec.get('title', ''), key=f"st_{shared_store['current_page']}_{s_idx}", label_visibility="collapsed")
+                sec['title_fs'] = sc2.number_input("제목 크기", 10, 80, int(sec.get('title_fs', 32)), key=f"stfs_{shared_store['current_page']}_{s_idx}")
                 sec['title_color'] = sc3.color_picker("제목 색상", sec.get('title_color', '#1a1c1e'), key=f"stc_{shared_store['current_page']}_{s_idx}")
+                sec['col_ratio'] = sc4.slider("좌/우 비율 조절", 1.0, 4.0, float(sec.get('col_ratio', 2.0)), 0.1, key=f"scr_{shared_store['current_page']}_{s_idx}")
             
-            # 대제목 렌더링 (하단에 연한 줄을 넣어 내용과 시각적으로 구분)
             st.markdown(f"<h2 style='font-size:{sec.get('title_fs', 32)}px; color:{sec.get('title_color', '#1a1c1e')}; margin-top: 0; margin-bottom: 20px; padding-bottom: 12px; border-bottom: 2px solid #f8f9fa;'>{sec.get('title')}</h2>", unsafe_allow_html=True)
 
-            # [핵심 2] 좌우 간격(gap)을 "medium"으로 줄여 꽉 차 보이게 설계
-            col_main, col_side = st.columns([2.5, 1], gap="medium")
+            current_ratio = sec.get('col_ratio', 2.0)
+            col_main, col_side = st.columns([current_ratio, 1], gap="medium")
             
             with col_main:
                 if edit_enabled:
@@ -197,21 +190,19 @@ def main_content_area(edit_enabled):
                         img_f = st.file_uploader(f"그림 업로드 (S{s_idx+1})", type=['png', 'jpg'], key=f"simg_{shared_store['current_page']}_{s_idx}")
                         if img_f: sec['main_image'] = f"data:image/png;base64,{base64.b64encode(img_f.getvalue()).decode()}"
                         
-                        # [핵심 3] 그림 자동 꽉 채우기 토글
                         sec['full_width'] = st.toggle("칼럼 너비 꽉 채우기 (권장)", value=sec.get('full_width', True), key=f"fw_{shared_store['current_page']}_{s_idx}")
                         if not sec['full_width']:
                             sec['img_width'] = st.slider("수동 너비 조절", 100, 1200, int(sec.get('img_width', 750)), key=f"sw_{shared_store['current_page']}_{s_idx}")
                             
                         if st.button("🗑️ 그림 삭제", key=f"simg_del_{shared_store['current_page']}_{s_idx}"): sec['main_image'] = None; st.rerun()
                 
-                # 그림 출력 시 use_container_width=True 로 완벽한 밸런스 구현
                 if sec.get('main_image'): 
                     if sec.get('full_width', True):
-                        st.image(sec['main_image'], use_container_width=True)
+                        st.markdown(f'<img src="{sec["main_image"]}" style="width:100%; border-radius:12px; margin-bottom:20px; box-shadow: 0 4px 12px rgba(0,0,0,0.05);" />', unsafe_allow_html=True)
                     else:
-                        st.image(sec['main_image'], width=int(sec.get('img_width', 750)))
+                        w = sec.get('img_width', 750)
+                        st.markdown(f'<div style="text-align:center; margin-bottom:20px;"><img src="{sec["main_image"]}" style="width:{w}px; max-width:100%; border-radius:12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05);" /></div>', unsafe_allow_html=True)
                 
-                # 텍스트 줄 편집
                 sec.setdefault('lines', [])
                 if edit_enabled:
                     st.caption("📝 본문 문구 스타일 편집 (줄 단위)")
@@ -258,18 +249,19 @@ def main_content_area(edit_enabled):
                                 if siu: item['src'] = f"data:image/png;base64,{base64.b64encode(siu.getvalue()).decode()}"
                                 item['width'] = st.slider("사이드 그림 너비", 100, 500, int(item.get('width', 350)), key=f"siw_{shared_store['current_page']}_{s_idx}_{i_idx}")
                     
+                    # [핵심 변경] 테두리와 배경이 완전히 제거된 깨끗한 렌더링
                     if item['type'] == "metric":
                         html = f"""
-                        <div class="side-slot-card">
-                            <div style="font-size:{item.get('label_fs', 14)}px; color:{item.get('label_color', '#64748b')}; margin-bottom:8px;">{item.get('label', '')}</div>
+                        <div style="margin-bottom: 24px;">
+                            <div style="font-size:{item.get('label_fs', 14)}px; color:{item.get('label_color', '#64748b')}; margin-bottom:6px;">{item.get('label', '')}</div>
                             <div style="font-size:{item.get('value_fs', 28)}px; font-weight:bold; color:{item.get('color', '#007bff')}; line-height:1.2;">{item.get('value', '')}</div>
                         </div>
                         """
                         st.markdown(html, unsafe_allow_html=True)
                     elif item['type'] == "image" and item.get('src'):
                         html = f"""
-                        <div class="side-slot-card">
-                            <img src="{item['src']}" style="width:{item.get('width', 350)}px; border-radius:8px;" />
+                        <div style="margin-bottom: 24px;">
+                            <img src="{item['src']}" style="width:{item.get('width', 350)}px; max-width:100%; border-radius:12px; box-shadow: 0 4px 12px rgba(0,0,0,0.08);" />
                         </div>
                         """
                         st.markdown(html, unsafe_allow_html=True)
