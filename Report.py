@@ -25,7 +25,7 @@ shared_store = get_global_store()
 def sync_user_id():
     js_code = """
     <script>
-    const storageKey = 'posco_uid_final_v9';
+    const storageKey = 'posco_uid_final_v10';
     let uid = localStorage.getItem(storageKey);
     if (!uid) {
         uid = 'u_' + Math.random().toString(36).substr(2, 9);
@@ -127,11 +127,11 @@ with st.sidebar:
             st.cache_resource.clear()
             st.rerun()
         
-        uploaded_file = st.file_uploader("JSON 업로드", type=['json', 'js'], key="uploader_v9")
+        uploaded_file = st.file_uploader("JSON 업로드", type=['json', 'js'], key="uploader_v10")
         if uploaded_file:
             try:
                 content = json.loads(uploaded_file.read().decode("utf-8"))
-                # 데이터 보정 로직
+                # [범용성 보장] 외부 JSON 로드 시 가시성 속성 자동 주입
                 for p in content.get('pages', []):
                     p.setdefault('show_p', True)
                     p.setdefault('show_img', True)
@@ -182,22 +182,23 @@ def sync_content_area(edit_enabled):
     p = data['pages'][current_tab_idx]
     st.divider()
     
-    # [복구] 탭 제목 및 가시성 제어 영역
+    # [편집 인터페이스] 탭 제목 및 가시성 제어
     if is_reporter and edit_enabled:
         col_t1, col_t2 = st.columns([3, 1])
         with col_t1:
             p['tab'] = st.text_input("🔖 탭(P1) 제목 수정", p.get('tab', ''), key=f"tab_edit_{current_tab_idx}")
         with col_t2:
-            st.write("👁️ 가시성")
-            p['show_p'] = st.checkbox("페이지", value=p.get('show_p', True), key=f"sp_{current_tab_idx}")
+            st.write("👁️ 가시성 제어")
+            p['show_p'] = st.checkbox("페이지 노출", value=p.get('show_p', True), key=f"sp_{current_tab_idx}")
             shared_store["sync_version"] += 1
 
     col_main, col_side = st.columns([2, 1], gap="large")
     
     with col_main:
         if is_reporter and edit_enabled:
-            p['header'] = st.text_input("📌 리포트 대제목", p.get('header', ''), key=f"h_{current_tab_idx}")
-            # 개별 노출 스위치
+            # [기능] 'PPT 보고의 단점' 같은 대제목 수정창
+            p['header'] = st.text_input("📌 리포트 대제목(Header) 수정", p.get('header', ''), key=f"h_{current_tab_idx}")
+            
             c_v1, c_v2 = st.columns(2)
             p['show_img'] = c_v1.checkbox("🖼️ 그림 표시", value=p.get('show_img', True), key=f"si_{current_tab_idx}")
             p['show_txt'] = c_v2.checkbox("📄 본문 표시", value=p.get('show_txt', True), key=f"st_{current_tab_idx}")
@@ -209,20 +210,16 @@ def sync_content_area(edit_enabled):
             st.image(p["image"], use_container_width=True)
         
         if p.get('show_txt', True):
-            # [기능 구현] 자유 입력 및 줄 단위 편집
             content_lines = p.get('content', '').split('\n')
             new_lines = []
-            
             for i, line in enumerate(content_lines):
                 if is_reporter and edit_enabled:
-                    # 줄별로 텍스트 입력창 배치 (원하는 위치 수정 가능)
                     edited_line = st.text_input(f"L{i+1}", line, key=f"line_{current_tab_idx}_{i}")
                     new_lines.append(edited_line)
                 else:
                     if line.strip(): st.markdown(f"### {line.strip()}")
             
             if is_reporter and edit_enabled:
-                # 줄 추가 버튼
                 if st.button("➕ 아래에 내용 추가", key=f"add_{current_tab_idx}"):
                     new_lines.append("새로운 내용을 입력하세요.")
                     shared_store["sync_version"] += 1
