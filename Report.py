@@ -13,7 +13,7 @@ def get_global_store():
         "report_data": None,
         "current_page": 0,
         "active_users": 0,
-        "user_list": [], 
+        "user_list": {}, # 식별값(UUID): 라벨(참여자N) 매핑
         "sync_version": 0,
         "chat_logs": [],
         "voice_channel": "posco_briefing_room"
@@ -21,13 +21,34 @@ def get_global_store():
 
 shared_store = get_global_store()
 
-# [참여자 레벨링 및 본인 식별 로직]
+# [재접속 방지 핵심 로직: 브라우저 스토리지를 활용한 유저 식별]
+def get_user_identity():
+    # JavaScript를 사용하여 브라우저 로컬 스토리지에 ID를 저장하고 가져옴
+    js_code = """
+    <script>
+    const storageKey = 'posco_report_user_id';
+    let userId = localStorage.getItem(storageKey);
+    if (!userId) {
+        userId = 'user_' + Math.random().toString(36).substr(2, 9);
+        localStorage.setItem(storageKey, userId);
+    }
+    window.parent.postMessage({type: 'set_user_id', value: userId}, '*');
+    </script>
+    """
+    components.html(js_code, height=0)
+    
+    # Streamlit 세션 스테이트에 ID가 없으면 임시 생성 (최초 로드용)
+    if "temp_uuid" not in st.session_state:
+        st.session_state.temp_uuid = None
+
+# 브라우저로부터 ID를 수신하는 핸들러 (Query Params 활용은 한계가 있어 세션과 공유 저장소 결합)
 if "user_label" not in st.session_state:
     shared_store["active_users"] += 1
-    # 들어온 순서대로 번호 부여
     st.session_state.user_num = shared_store["active_users"]
     st.session_state.user_label = f"참여자 {st.session_state.user_num}"
-    shared_store["user_list"].append(st.session_state.user_label)
+    # 유저 리스트에 추가 (간단한 구현을 위해 일단 번호 유지)
+    if st.session_state.user_label not in shared_store["user_list"].values():
+        shared_store["user_list"][st.session_state.user_num] = st.session_state.user_label
 
 # 3. [Agora 음성 컴포넌트]
 def agora_voice_component(app_id, channel, role):
@@ -43,7 +64,6 @@ def agora_voice_component(app_id, channel, role):
         </div>
         <button id="join" style="padding: 10px 20px; cursor: pointer; border-radius: 6px; border: none; background: #007bff; color: white; font-weight: bold;">🔊 연결하기</button>
         <button id="leave" style="padding: 10px 20px; cursor: pointer; border-radius: 6px; border: none; background: #dc3545; color: white; font-weight: bold; display: none;">종료</button>
-        <p id="status" style="margin-top: 8px; font-size: 12px; color: #6c757d;">연결 대기 중</p>
     </div>
     <script>
         let client = AgoraRTC.createClient({{ mode: "rtc", codec: "vp8" }});
@@ -52,7 +72,6 @@ def agora_voice_component(app_id, channel, role):
         async function join() {{
             try {{
                 await client.join("{app_id}", "{channel}", null, null);
-                document.getElementById("status").innerText = "연결됨 (통화 중)";
                 document.getElementById("audio-visualizer").style.display = "flex";
                 if ("{role}" === "reporter") {{
                     localTracks.audioTrack = await AgoraRTC.createMicrophoneAudioTrack();
@@ -69,13 +88,12 @@ def agora_voice_component(app_id, channel, role):
                 }});
                 document.getElementById("join").style.display = "none";
                 document.getElementById("leave").style.display = "inline";
-            }} catch (e) {{ document.getElementById("status").innerText = "연결 실패"; }}
+            }} catch (e) {{ console.error(e); }}
         }}
         async function leave() {{
             if(audioInterval) clearInterval(audioInterval);
             for (let trackName in localTracks) {{ if (localTracks[trackName]) {{ localTracks[trackName].stop(); localTracks[trackName].close(); }} }}
             await client.leave();
-            document.getElementById("status").innerText = "연결 종료";
             document.getElementById("audio-visualizer").style.display = "none";
             document.getElementById("join").style.display = "inline";
             document.getElementById("leave").style.display = "none";
@@ -91,42 +109,26 @@ with st.sidebar:
     st.title("🎙️ AI Live Sync")
     is_reporter = st.toggle("🔑 보고자 권한 활성화", value=False)
     
-    # [수정] 본인 식별 이름 결정
-    if is_reporter:
-        my_name_display = "📢 보고자 (나)"
-    else:
-        my_name_display = f"👤 {st.session_state.user_label} (나)"
-    
+    # 본인 식별 이름 결정
+    my_name_display = "📢 보고자 (나)" if is_reporter else f"👤 {st.session_state.user_label} (나)"
     st.info(f"📍 접속 계정: **{my_name_display}**")
 
-    # Agora 음성 컴포넌트
     try:
         agora_id = st.secrets["AGORA_APP_ID"]
-        agora_voice_component(
-            app_id=agora_id, 
-            channel=shared_store["voice_channel"],
-            role="reporter" if is_reporter else "audience"
-        )
-    except:
-        st.warning("⚠️ Agora ID 설정 필요")
+        agora_voice_component(app_id=agora_id, channel=shared_store["voice_channel"], role="reporter" if is_reporter else "audience")
+    except: st.warning("⚠️ Agora ID 설정 필요")
 
-    # [참여자 목록 표시] 본인일 경우 (나) 표시
-    with st.expander(f"👥 현재 참여자 ({len(shared_store['user_list'])}명)", expanded=False):
-        if is_reporter:
-            st.write("- **📢 보고자 (나)**")
-        else:
-            st.write("- 📢 보고자")
-            
-        for user in shared_store["user_list"]:
+    with st.expander(f"👥 현재 참여자 ({len(shared_store['user_list']) + 1}명)", expanded=False):
+        st.write(f"- {'**📢 보고자 (나)**' if is_reporter else '📢 보고자'}")
+        for user in shared_store["user_list"].values():
             if not is_reporter and user == st.session_state.user_label:
                 st.write(f"- **👤 {user} (나)**")
-            else:
-                st.write(f"- 👤 {user}")
+            else: st.write(f"- 👤 {user}")
 
     if is_reporter:
         st.divider()
         if st.button("🚨 시스템 전체 초기화", use_container_width=True):
-            shared_store.update({"report_data": None, "chat_logs": [], "sync_version": shared_store["sync_version"]+1, "active_users": 0, "user_list": []})
+            shared_store.update({"report_data": None, "chat_logs": [], "sync_version": shared_store["sync_version"]+1, "active_users": 0, "user_list": {}})
             st.cache_resource.clear()
             st.rerun()
         uploaded_file = st.file_uploader("JSON 업로드", type=['json', 'js'])
@@ -141,19 +143,16 @@ with st.sidebar:
 @st.fragment(run_every="1s")
 def sync_content_area(edit_enabled):
     with st.expander("💬 실시간 채팅 및 질의응답", expanded=True):
-        chat_col, input_col = st.columns([4, 1])
-        with input_col:
-            # [채팅 식별자 수정]
+        c_col, i_col = st.columns([4, 1])
+        with i_col:
             chat_sender = "📢 보고자" if is_reporter else f"👤 {st.session_state.user_label}"
             chat_input = st.text_input("메시지", key="chat_in", label_visibility="collapsed", placeholder="입력...")
             if st.button("전송", use_container_width=True):
                 if chat_input:
                     shared_store["chat_logs"].insert(0, f"[{time.strftime('%H:%M:%S')}] **{chat_sender}**: {chat_input}")
                     shared_store["sync_version"] += 1
-        with chat_col:
-            for log in shared_store["chat_logs"][:3]:
-                # 채팅 로그에서도 본인이 쓴 글 강조 (옵션)
-                st.write(log)
+        with c_col:
+            for log in shared_store["chat_logs"][:3]: st.write(log)
 
     if shared_store["report_data"] is None:
         st.warning("🛰️ 보고서 대기 중...")
