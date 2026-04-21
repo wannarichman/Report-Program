@@ -141,7 +141,7 @@ def adapt_json_format(raw_data):
 # ==========================================
 # 4. ID 식별 및 음성 시스템
 # ==========================================
-# [중복 방지] URL UID 고정 로직
+# [중복 방지] URL UID 고정 로직으로 새로고침 시 중복 발생을 원천 차단
 if "uid" not in st.session_state:
     url_uid = st.query_params.get("uid")
     if url_uid:
@@ -152,6 +152,7 @@ if "uid" not in st.session_state:
         st.query_params["uid"] = new_uid
 
 if "user_label" not in st.session_state:
+    # 현재 활성 세션 수를 기준으로 번호 부여
     active_now = len([s for s in shared_store["active_sessions"].values() if time.time() - s["last_seen"] < 10])
     label = f"참여자 {active_now + 1}"
     st.session_state.user_label = label
@@ -173,72 +174,64 @@ def agora_voice_system(app_id, channel, user_label):
         let client = AgoraRTC.createClient({{ mode: "rtc", codec: "vp8" }});
         let localTracks = {{ audioTrack: null }};
         let isMuted = false;
-        
         client.enableAudioVolumeIndicator();
-        
         async function join() {{
             try {{
                 await client.join("{app_id}", "{channel}", null, null);
                 localTracks.audioTrack = await AgoraRTC.createMicrophoneAudioTrack();
                 await client.publish([localTracks.audioTrack]);
-                
                 document.getElementById("join").style.display = "none";
-                const muteBtn = document.getElementById("mute");
-                muteBtn.style.display = "inline-block";
-                
+                document.getElementById("mute").style.display = "inline-block";
                 client.on("volume-indicator", (vs) => {{ 
                     vs.forEach((v) => {{ 
                         if(v.uid === 0 && !isMuted) document.getElementById("level-bar").style.width = Math.min(v.level * 2, 100) + "%"; 
                         if(isMuted) document.getElementById("level-bar").style.width = "0%";
                     }}); 
                 }});
-                
-                client.on("user-published", async (u, m) => {{ 
-                    await client.subscribe(u, m); 
-                    if(m === "audio") u.audioTrack.play(); 
-                }});
-                
+                client.on("user-published", async (u, m) => {{ await client.subscribe(u, m); if(m === "audio") u.audioTrack.play(); }});
             }} catch (e) {{ console.error(e); }}
         }}
-        
         function toggleMute() {{
             if (!localTracks.audioTrack) return;
-            isMuted = !isMuted;
-            localTracks.audioTrack.setEnabled(!isMuted);
-            
+            isMuted = !isMuted; localTracks.audioTrack.setEnabled(!isMuted);
             const btn = document.getElementById("mute");
-            if (isMuted) {{
-                btn.innerText = "🔇 마이크 끔";
-                btn.classList.add("active");
-            }} else {{
-                btn.innerText = "🎤 마이크 켬";
-                btn.classList.remove("active");
-            }}
+            if (isMuted) {{ btn.innerText = "🔇 마이크 끔"; btn.classList.add("active"); }} 
+            else {{ btn.innerText = "🎤 마이크 켬"; btn.classList.remove("active"); }}
         }}
-
         document.getElementById("join").onclick = join;
         document.getElementById("mute").onclick = toggleMute;
     </script>
     """
     components.html(custom_html, height=150)
 
-# [추가] 참여자 화면 실시간 동기화용 명단 프래그먼트
+# [수정] 참여자 화면 실시간 동기화 및 중복 라벨 완벽 필터링 프래그먼트
 @st.fragment(run_every="1s")
 def sync_member_list(my_uid):
     with st.container(border=True):
         st.caption("👥 실시간 접속 멤버")
         now = time.time()
-        display_set = set()
-        for uid, info in shared_store["active_sessions"].items():
-            if now - info["last_seen"] < 6:
-                label = info["label"]
-                if uid == my_uid: label += " (나)"
-                display_set.add(label)
         
-        final_list = sorted(list(display_set))
-        if not final_list: st.write("접속자 없음")
+        # 라벨별 중복을 제거하기 위한 맵 {라벨명: 나인지여부}
+        temp_sessions = {}
+        
+        for uid, info in shared_store["active_sessions"].items():
+            if now - info["last_seen"] < 6: # 6초 이내 활동 세션만
+                base_label = info["label"]
+                is_me = (uid == my_uid)
+                
+                # 이미 해당 라벨이 존재하더라도, 현재 세션이 '나'인 경우를 우선함
+                if base_label not in temp_sessions or is_me:
+                    temp_sessions[base_label] = is_me
+        
+        if not temp_sessions:
+            st.write("접속자 없음")
         else:
-            for user in final_list: st.markdown(f"🟢 **{user}**")
+            # 라벨 정렬 후 출력
+            for label in sorted(temp_sessions.keys()):
+                display_name = label
+                if temp_sessions[label]:
+                    display_name += " (나)"
+                st.markdown(f"🟢 **{display_name}**")
 
 # ==========================================
 # 5. 사이드바 (Sidebar) 통제 센터
@@ -254,7 +247,7 @@ with st.sidebar:
     except: 
         st.warning("⚠️ Agora ID 설정 필요")
 
-    # 참여자 화면에서도 실시간으로 명단을 보여주는 전용 프래그먼트 호출
+    # 프래그먼트 호출로 사이드바 명단만 독립적으로 1초마다 최신화
     sync_member_list(st.session_state.uid)
 
     if is_reporter:
@@ -298,7 +291,7 @@ with st.sidebar:
 # ==========================================
 @st.fragment(run_every="1s")
 def main_content_area(edit_enabled):
-    # 하트비트 갱신 (서버에 내 활동 기록)
+    # 하트비트 갱신 (본인의 접속 정보와 라벨을 1초마다 서버에 기록)
     shared_store["active_sessions"][st.session_state.uid] = {
         "label": my_label,
         "last_seen": time.time()
