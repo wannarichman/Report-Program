@@ -139,14 +139,19 @@ def adapt_json_format(raw_data):
     return {"pages": [create_empty_page()]}
 
 # ==========================================
-# 4. ID 식별 및 음성 시스템 (Agora)
+# 4. ID 식별 및 음성 시스템
 # ==========================================
+# [중복 방지] URL UID 고정 로직
 if "uid" not in st.session_state:
-    st.session_state.uid = st.query_params.get("uid", f"u_{int(time.time()*1000)}")
-    st.query_params["uid"] = st.session_state.uid
+    url_uid = st.query_params.get("uid")
+    if url_uid:
+        st.session_state.uid = url_uid
+    else:
+        new_uid = f"u_{int(time.time()*1000)}"
+        st.session_state.uid = new_uid
+        st.query_params["uid"] = new_uid
 
 if "user_label" not in st.session_state:
-    # 현재 활성 세션을 기준으로 라벨 부여
     active_now = len([s for s in shared_store["active_sessions"].values() if time.time() - s["last_seen"] < 10])
     label = f"참여자 {active_now + 1}"
     st.session_state.user_label = label
@@ -217,23 +222,23 @@ def agora_voice_system(app_id, channel, user_label):
     """
     components.html(custom_html, height=150)
 
-# [추가] 사이드바 명단 전용 실시간 갱신 프래그먼트
+# [추가] 참여자 화면 실시간 동기화용 명단 프래그먼트
 @st.fragment(run_every="1s")
-def sync_member_list():
+def sync_member_list(my_uid):
     with st.container(border=True):
         st.caption("👥 실시간 접속 멤버")
         now = time.time()
-        # 6초 이내 신호가 있는 세션만 필터링 (유령 참여자 방지)
-        active_list = [
-            info["label"] for uid, info in shared_store["active_sessions"].items()
-            if now - info["last_seen"] < 6
-        ]
+        display_set = set()
+        for uid, info in shared_store["active_sessions"].items():
+            if now - info["last_seen"] < 6:
+                label = info["label"]
+                if uid == my_uid: label += " (나)"
+                display_set.add(label)
         
-        if not active_list:
-            st.write("접속자 없음")
+        final_list = sorted(list(display_set))
+        if not final_list: st.write("접속자 없음")
         else:
-            for user in sorted(list(set(active_list))):
-                st.markdown(f"🟢 **{user}**")
+            for user in final_list: st.markdown(f"🟢 **{user}**")
 
 # ==========================================
 # 5. 사이드바 (Sidebar) 통제 센터
@@ -249,8 +254,8 @@ with st.sidebar:
     except: 
         st.warning("⚠️ Agora ID 설정 필요")
 
-    # [수정] 프래그먼트 호출로 실시간성 확보
-    sync_member_list()
+    # 참여자 화면에서도 실시간으로 명단을 보여주는 전용 프래그먼트 호출
+    sync_member_list(st.session_state.uid)
 
     if is_reporter:
         st.divider()
@@ -261,7 +266,7 @@ with st.sidebar:
             mime="application/json",
             use_container_width=True
         )
-        st.caption("💡 **Tip:** 위 표준 양식을 AI에게 주고 내용을 채워달라고 하세요.")
+        st.caption("💡 **Tip:** 위 표준 양식을 다운받아 제미나이(AI)에게 첨부한 뒤, *'이 JSON 양식에 맞춰서 OO에 대한 보고서를 작성해 줘'* 라고 요청해 보세요.")
         
         st.write("---")
         uploaded_file = st.file_uploader("📂 JSON 로드 (작업본 불러오기)", type=['json'])
@@ -293,7 +298,7 @@ with st.sidebar:
 # ==========================================
 @st.fragment(run_every="1s")
 def main_content_area(edit_enabled):
-    # [핵심] 하트비트 갱신: 본인의 접속 정보를 1초마다 서버에 기록
+    # 하트비트 갱신 (서버에 내 활동 기록)
     shared_store["active_sessions"][st.session_state.uid] = {
         "label": my_label,
         "last_seen": time.time()
