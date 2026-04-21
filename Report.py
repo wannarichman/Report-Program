@@ -5,7 +5,7 @@ import time
 import base64
 
 # 1. 페이지 설정
-st.set_page_config(page_title="POSCO E&C AI Live Sync", layout="wide")
+st.set_page_config(page_title="POSCO E&C AI Live Sync vFinal", layout="wide")
 
 # 2. [전역 저장소]
 @st.cache_resource
@@ -15,27 +15,65 @@ def get_global_store():
         "current_page": 0,
         "user_labels": {}, 
         "sync_version": 0,
-        "voice_active_users": [], 
-        "chat_history": [], # 실시간 채팅 저장
+        "chat_history": [],
+        "voice_active_users": {}, 
         "voice_channel": "posco_briefing_room"
     }
 
 shared_store = get_global_store()
 
-# [ID 식별]
+# --- [스마트 JSON 어댑터: 무작위 JSON 호환 로직] ---
+def adapt_json_format(raw_data):
+    """업로드된 JSON이 규격에 맞지 않을 경우 강제로 리포트 구조로 변환"""
+    if isinstance(raw_data, dict) and "pages" in raw_data:
+        return raw_data # 이미 규격에 맞음
+    
+    # 규격에 맞지 않는 경우 자동 생성 프로세스
+    adapted_page = {
+        "tab": "수동 변환 데이터",
+        "header": "자동 인식 리포트",
+        "header_fs": 40,
+        "content": "",
+        "line_fs": [],
+        "image": None,
+        "img_width": 600,
+        "side_blocks": [],
+        "bottom_blocks": []
+    }
+    
+    if isinstance(raw_data, dict):
+        # 제목 후보군 탐색
+        for k in ["title", "header", "name", "subject", "topic"]:
+            if k in raw_data:
+                adapted_page["header"] = str(raw_data[k])
+                break
+        # 본문 후보군 탐색 및 변환
+        content_parts = []
+        for k, v in raw_data.items():
+            if k.lower() in ["content", "description", "body", "text"]:
+                content_parts.append(str(v))
+            elif isinstance(v, (str, int, float)) and len(str(v)) < 50: # 짧은 데이터는 지표로 활용
+                adapted_page["side_blocks"].append({"type": "metric", "label": str(k), "value": str(v), "fs": 20})
+        
+        adapted_page["content"] = "\n".join(content_parts) if content_parts else json.dumps(raw_data, indent=2, ensure_ascii=False)
+    
+    elif isinstance(raw_data, list):
+        adapted_page["content"] = "\n".join([str(i) for i in raw_data[:20]])
+        adapted_page["header"] = "리스트 데이터 리포트"
+
+    return {"pages": [adapted_page]}
+
+# --- [ID 식별 및 음성 시스템] ---
 if "user_label" not in st.session_state:
     uid = st.query_params.get("uid")
     if not uid:
         uid = f"u_{int(time.time()*1000)}"
         st.query_params["uid"] = uid
-    if uid in shared_store["user_labels"]:
-        st.session_state.user_label = shared_store["user_labels"][uid]
+    if uid in shared_store["user_labels"]: st.session_state.user_label = shared_store["user_labels"][uid]
     else:
         label = f"참여자 {len(shared_store['user_labels']) + 1}"
-        shared_store["user_labels"][uid] = label
-        st.session_state.user_label = label
+        shared_store["user_labels"][uid] = label; st.session_state.user_label = label
 
-# 3. [음성 시스템 및 명단 통합 컴포넌트]
 def agora_voice_system(app_id, channel, user_label):
     custom_html = f"""
     <script src="https://download.agora.io/sdk/release/AgoraRTC_N-4.11.0.js"></script>
@@ -81,35 +119,31 @@ def agora_voice_system(app_id, channel, user_label):
 # --- 사이드바 ---
 with st.sidebar:
     st.title("🎙️ AI Live Sync")
-    is_reporter = st.toggle("🔑 보고자 권한 활성화", value=False)
+    is_reporter = st.toggle("🔑 보고자 권한", value=False)
     my_label = "📢 보고자" if is_reporter else f"👤 {st.session_state.user_label}"
     st.info(f"📍 내 정보: **{my_label}**")
     
-    # 1. 음성 접속 컴포넌트
     try:
         agora_id = st.secrets["AGORA_APP_ID"]
         agora_voice_system(agora_id, shared_store["voice_channel"], my_label)
     except: st.warning("⚠️ Agora ID 설정 필요")
 
-    # 2. 참여자 명단 (음성 접속 밑으로 이동)
     with st.container(border=True):
-        st.caption("👥 실시간 음성 참여 명단")
+        st.caption("👥 실시간 참여 명단")
         if is_reporter:
             options = ["📢 보고자"] + [f"👤 참여자 {i+1}" for i in range(len(shared_store['user_labels']))]
             shared_store["voice_active_users"] = st.multiselect("명단 동기화", options=options, default=shared_store["voice_active_users"])
-        
-        if shared_store["voice_active_users"]:
-            for user in shared_store["voice_active_users"]:
-                st.markdown(f"🟢 **{user}**")
-        else: st.write("대기 중...")
+        for user in shared_store["voice_active_users"]: st.markdown(f"🟢 **{user}**")
 
     if is_reporter:
         st.divider()
         if shared_store["report_data"]:
             st.download_button("📥 최종 JSON 저장", data=json.dumps(shared_store["report_data"], indent=4, ensure_ascii=False), file_name="POSCO_Report.json", use_container_width=True)
-        uploaded_file = st.file_uploader("📂 JSON 로드", type=['json'])
+        uploaded_file = st.file_uploader("📂 JSON 파일 로드 (무작위 형식 지원)", type=['json'])
         if uploaded_file and shared_store["report_data"] is None:
-            shared_store["report_data"] = json.loads(uploaded_file.read().decode("utf-8"))
+            raw_content = json.loads(uploaded_file.read().decode("utf-8"))
+            # [Smart Adapter 적용]
+            shared_store["report_data"] = adapt_json_format(raw_content)
         if st.button("🚨 초기화"):
             shared_store.update({"report_data": None, "user_labels": {}, "voice_active_users": [], "chat_history": []})
             st.cache_resource.clear(); st.rerun()
@@ -119,15 +153,14 @@ with st.sidebar:
 # 4. [메인 엔진]
 @st.fragment(run_every="1s")
 def main_content_area(edit_enabled):
-    # [신규] 최상단 실시간 상호소통 채팅
-    with st.expander("💬 실시간 상호소통 채팅 (클릭하여 열기)", expanded=False):
-        chat_col1, chat_col2 = st.columns([4, 1])
-        new_msg = chat_col1.text_input("메시지 입력", key="chat_input", label_visibility="collapsed")
-        if chat_col2.button("전송", use_container_width=True) and new_msg:
+    # 최상단 채팅
+    with st.expander("💬 실시간 상호소통 채팅", expanded=False):
+        c1, c2 = st.columns([4, 1])
+        new_msg = c1.text_input("메시지", key="chat_input", label_visibility="collapsed")
+        if c2.button("전송", use_container_width=True) and new_msg:
             shared_store["chat_history"].append(f"**{my_label}**: {new_msg}")
-        
         chat_box = "".join([f"<div style='margin-bottom:5px;'>{m}</div>" for m in shared_store["chat_history"][-10:]])
-        st.markdown(f"<div style='height:150px; overflow-y:auto; background:#f1f3f6; padding:10px; border-radius:8px; font-size:14px;'>{chat_box}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='height:100px; overflow-y:auto; background:#f1f3f6; padding:10px; border-radius:8px; font-size:14px;'>{chat_box}</div>", unsafe_allow_html=True)
 
     if shared_store["report_data"] is None:
         st.warning("📂 JSON 보고서를 로드해주세요.")
@@ -135,7 +168,7 @@ def main_content_area(edit_enabled):
 
     data = shared_store["report_data"]; p = data['pages'][shared_store["current_page"]]
 
-    # 상단 네비게이션
+    # 내비게이션
     if is_reporter:
         tabs = {i: f"P{i+1}. {pg.get('tab', '')}" for i, pg in enumerate(data['pages'])}
         c_idx = st.radio("📑 페이지", list(tabs.keys()), index=shared_store["current_page"], format_func=lambda x: tabs[x], horizontal=True)
@@ -143,11 +176,9 @@ def main_content_area(edit_enabled):
         if edit_enabled: p['tab'] = st.text_input("🔖 탭 제목", p.get('tab', ''), key="t_ed")
     else: st.subheader(f"📍 P{shared_store['current_page']+1}. {p.get('tab', '')}")
 
-    st.divider()
-    col_main, col_side = st.columns([2, 1], gap="large")
+    st.divider(); col_main, col_side = st.columns([2, 1], gap="large")
 
     with col_main:
-        # 본문 제목 및 편집
         if edit_enabled:
             c1, c2 = st.columns([4, 1])
             p['header'], p['header_fs'] = c1.text_input("📌 대제목", p.get('header', '')), c2.number_input("크기", 10, 150, int(p.get('header_fs', 40)))
@@ -174,12 +205,10 @@ def main_content_area(edit_enabled):
             if st.button("➕ 줄 추가"): new_l.append("새 내용"); new_f.append(24)
             p['content'], p['line_fs'] = '\n'.join(new_l), new_f
 
-        # 하단 무한 확장 섹션
-        st.write("---")
-        p.setdefault('bottom_blocks', [])
-        if edit_enabled:
-            if st.button("➕ 하단 섹션 추가"):
-                p['bottom_blocks'].append({"header": "제목", "header_fs": 32, "content": "내용", "content_fs": 20, "image": None, "img_width": 500})
+        # 하단 섹션
+        st.write("---"); p.setdefault('bottom_blocks', [])
+        if edit_enabled and st.button("➕ 하단 섹션 추가"):
+            p['bottom_blocks'].append({"header": "제목", "header_fs": 32, "content": "내용", "content_fs": 20, "image": None, "img_width": 500})
         for idx, bb in enumerate(p['bottom_blocks']):
             with st.container(border=edit_enabled):
                 if edit_enabled:
@@ -195,7 +224,6 @@ def main_content_area(edit_enabled):
                 st.markdown(f'<p style="font-size:{bb.get("content_fs", 20)}px;">{bb["content"]}</p>', unsafe_allow_html=True)
 
     with col_side:
-        # 우측 모듈형 블록
         p.setdefault('side_blocks', [])
         if edit_enabled:
             with st.container(border=True):
