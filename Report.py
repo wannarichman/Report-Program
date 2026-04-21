@@ -4,13 +4,12 @@ import json
 import time
 import base64
 
-# 1. 페이지 설정 및 디자인 프레임워크 (UI 시각적 구분 극대화)
+# 1. 페이지 설정 및 디자인 프레임워크 (시각적 구분 및 통합성 강화)
 st.set_page_config(page_title="POSCO E&C AI Live Sync Master", layout="wide")
 
 st.markdown("""
     <style>
     .stApp { background-color: #f4f7f9; }
-    /* 섹션 통합 뭉치: 테두리 및 입체감 강화 */
     .section-container {
         border: 2px solid #cfd4da; padding: 40px; border-radius: 25px;
         background-color: #ffffff; margin-bottom: 50px;
@@ -25,7 +24,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# 2. [전역 저장소] 실시간 동기화 엔진
+# 2. [전역 저장소]
 @st.cache_resource
 def get_global_store():
     return {
@@ -37,15 +36,15 @@ def get_global_store():
 shared_store = get_global_store()
 
 # --- [유틸리티 로직] ---
-def adapt_json_format(raw_data):
-    if isinstance(raw_data, dict) and "pages" in raw_data: return raw_data
-    return {"pages": [create_empty_page()]}
-
 def create_empty_page():
     return {
         "tab": "새 페이지", "header": "제목을 입력하세요", "header_fs": 45, "header_color": "#1a1c1e",
         "sections": [{"title": "새로운 분석 섹션", "lines": [{"text": "내용을 입력하세요", "size": 22, "color": "#000000"}], "main_image": None, "side_items": []}]
     }
+
+def adapt_json_format(raw_data):
+    if isinstance(raw_data, dict) and "pages" in raw_data: return raw_data
+    return {"pages": [create_empty_page()]}
 
 # --- [ID 식별 및 음성 시스템 (Agora)] ---
 if "user_label" not in st.session_state:
@@ -83,36 +82,36 @@ def agora_voice_system(app_id, channel, user_label):
     """
     components.html(custom_html, height=130)
 
-# --- 사이드바: 통합 제어 패널 ---
+# --- 사이드바 ---
 with st.sidebar:
-    st.title("🎙️ AI Live Sync Master")
+    st.title("🎙️ AI Live Sync")
     is_reporter = st.toggle("🔑 보고자 권한", value=False)
     my_label = "📢 보고자" if is_reporter else f"👤 {st.session_state.user_label}"
-    st.info(f"📍 접속: **{my_label}**")
     
     try:
         agora_id = st.secrets["AGORA_APP_ID"]
         agora_voice_system(agora_id, shared_store["voice_channel"], my_label)
     except: st.warning("⚠️ Agora ID 설정 필요")
 
-    with st.container(border=True):
-        st.caption("👥 실시간 참여 명단")
-        if is_reporter:
-            options = ["📢 보고자"] + [f"👤 참여자 {i+1}" for i in range(len(shared_store['user_labels']))]
-            shared_store["voice_active_users_list"] = st.multiselect("명단 동기화", options=options, default=shared_store.get("voice_active_users_list", []))
-        for user in shared_store.get("voice_active_users_list", []): st.markdown(f"🟢 **{user}**")
-
     if is_reporter:
         st.divider()
+        uploaded_file = st.file_uploader("📂 JSON 로드", type=['json'])
+        
+        # [핵심 버그 패치] 업로드 파일 중복 로드 방지 (데이터 덮어쓰기 금지)
+        if uploaded_file:
+            if st.session_state.get("last_uploaded_id") != uploaded_file.file_id:
+                shared_store["report_data"] = adapt_json_format(json.loads(uploaded_file.read().decode("utf-8")))
+                st.session_state["last_uploaded_id"] = uploaded_file.file_id
+                shared_store["current_page"] = 0
+                
+        if st.button("🚨 전체 데이터 초기화"):
+            shared_store.update({"report_data": None, "current_page": 0, "chat_history": []})
+            st.session_state.pop("last_uploaded_id", None) # 파일 잠금도 해제
+            st.rerun()
+            
         if shared_store["report_data"]:
             st.download_button("📥 최종 마스터 JSON 저장", data=json.dumps(shared_store["report_data"], indent=4, ensure_ascii=False), file_name="Master_Final.json", use_container_width=True)
-        uploaded_file = st.file_uploader("📂 JSON 로드", type=['json'])
-        if uploaded_file: shared_store["report_data"] = adapt_json_format(json.loads(uploaded_file.read().decode("utf-8")))
-        
-        if st.button("🚨 전체 데이터 초기화"):
-            shared_store.update({"report_data": None, "current_page": 0, "chat_history": []}); st.rerun()
-            
-        edit_mode = st.toggle("📝 전체 디자인/저작 모드 활성화", value=False)
+        edit_mode = st.toggle("📝 디자인/저작 모드 활성화", value=False)
     else: edit_mode = False
 
 # --- [메인 브리핑 엔진] ---
@@ -123,19 +122,24 @@ def main_content_area(edit_enabled):
         c1, c2 = st.columns([4, 1])
         msg = c1.text_input("메시지", key="chat_in", label_visibility="collapsed")
         if c2.button("전송") and msg: shared_store["chat_history"].append(f"**{my_label}**: {msg}")
-        chat_box = "".join([f"<div style='margin-bottom:5px;'>{m}</div>" for m in shared_store["chat_history"][-10:]])
+        chat_box = "".join([f"<div style='margin-bottom:6px;'>{m}</div>" for m in shared_store["chat_history"][-10:]])
         st.markdown(f"<div style='height:120px; overflow-y:auto; background:#f8f9fa; padding:12px; border-radius:10px;'>{chat_box}</div>", unsafe_allow_html=True)
 
     if shared_store["report_data"] is None:
         st.markdown("<div style='text-align:center; padding:150px; color:#6c757d;'><h2>📂 리포트가 초기화되었습니다.</h2></div>", unsafe_allow_html=True)
-        if edit_enabled and st.button("📄 새 보고서 생성"):
+        if edit_enabled and st.button("📄 완전히 새로운 보고서 시작하기"):
             shared_store["report_data"] = {"pages": [create_empty_page()]}; st.rerun()
         return
 
     data = shared_store["report_data"]
+    
+    # [핵심 버그 패치] IndexError 원천 차단을 위한 안전 장치
+    if shared_store["current_page"] >= len(data['pages']):
+        shared_store["current_page"] = max(0, len(data['pages']) - 1)
+
     p = data['pages'][shared_store["current_page"]]
     
-    # 2. 페이지 및 탭 관리 (기능 유지)
+    # 2. 페이지 및 탭 관리
     if edit_enabled:
         st.write("---")
         pc1, pc2 = st.columns([1, 5])
@@ -143,16 +147,17 @@ def main_content_area(edit_enabled):
             data['pages'].insert(shared_store["current_page"] + 1, create_empty_page())
             shared_store["current_page"] += 1; st.rerun()
         if pc2.button("🗑️ 페이지 삭제") and len(data['pages']) > 1:
-            data['pages'].pop(shared_store["current_page"]); st.rerun()
+            data['pages'].pop(shared_store["current_page"])
+            shared_store["current_page"] = max(0, shared_store["current_page"] - 1); st.rerun()
 
     if is_reporter:
         tabs = {i: f"P{i+1}. {pg.get('tab', '')}" for i, pg in enumerate(data['pages'])}
         shared_store["current_page"] = st.radio("📑 이동", list(tabs.keys()), index=shared_store["current_page"], format_func=lambda x: tabs[x], horizontal=True)
-        if edit_enabled: p['tab'] = st.text_input("🔖 탭 이름 수정", p.get('tab', ''), key=f"t_ed_{shared_store['current_page']}")
+        if edit_enabled: p['tab'] = st.text_input("🔖 탭 이름", p.get('tab', ''), key=f"t_ed_{shared_store['current_page']}")
 
-    # 3. 대제목 디자인 (기능 유지)
+    # 3. 대제목 디자인
     if edit_enabled:
-        with st.expander("📌 대제목 디자인 설정", expanded=True):
+        with st.expander("📌 대제목 디자인 설정"):
             p['header'] = st.text_input("제목 내용", p.get('header', ''), key="h_ed")
             c1, c2 = st.columns(2)
             p['header_fs'] = c1.slider("제목 크기", 10, 150, int(p.get('header_fs', 45)))
@@ -168,7 +173,6 @@ def main_content_area(edit_enabled):
         st.rerun()
 
     for s_idx, sec in enumerate(sections):
-        # 섹션 전체를 하나의 명확한 테두리 블록으로 감쌈
         st.markdown('<div class="section-container">', unsafe_allow_html=True)
         col_main, col_side = st.columns([2.5, 1], gap="large")
         
@@ -179,12 +183,12 @@ def main_content_area(edit_enabled):
                     img_f = st.file_uploader(f"그림 (S{s_idx+1})", type=['png', 'jpg'], key=f"simg_{shared_store['current_page']}_{s_idx}")
                     if img_f: sec['main_image'] = f"data:image/png;base64,{base64.b64encode(img_f.getvalue()).decode()}"
                     sec['img_width'] = st.slider("너비", 100, 1200, int(sec.get('img_width', 750)), key=f"sw_{shared_store['current_page']}_{s_idx}")
-                    if st.button("🗑️ 그림 삭제", key=f"simg_del_{s_idx}"): sec['main_image'] = None; st.rerun()
+                    if st.button("🗑️ 그림 삭제", key=f"simg_del_{shared_store['current_page']}_{s_idx}"): sec['main_image'] = None; st.rerun()
             
             st.markdown(f"## {sec.get('title')}")
             if sec.get('main_image'): st.image(sec['main_image'], width=int(sec.get('img_width', 750)))
             
-            # [줄 단위 텍스트 편집: 버그 수정 완료]
+            # [텍스트 줄 편집]
             sec.setdefault('lines', [])
             if edit_enabled:
                 st.caption("📝 본문 문구 스타일 편집 (줄 단위)")
@@ -216,11 +220,12 @@ def main_content_area(edit_enabled):
                     cc1, cc2 = st.columns([4, 1])
                     if cc2.button("🗑️", key=f"sdel_{shared_store['current_page']}_{s_idx}_{i_idx}"): sec['side_items'].pop(i_idx); st.rerun()
                     if item['type'] == "metric":
-                        item['label'], item['value'] = st.text_input("지표명", item['label'], key=f"il_{s_idx}_{i_idx}"), st.text_input("수치", item['value'], key=f"iv_{s_idx}_{i_idx}")
-                        item['color'] = st.color_picker("색상", item.get('color', '#007bff'), key=f"ic_{s_idx}_{i_idx}")
+                        item['label'], item['value'] = st.text_input("명", item['label'], key=f"il_{shared_store['current_page']}_{s_idx}_{i_idx}"), st.text_input("값", item['value'], key=f"iv_{shared_store['current_page']}_{s_idx}_{i_idx}")
+                        item['color'] = st.color_picker("색상", item.get('color', '#007bff'), key=f"ic_{shared_store['current_page']}_{s_idx}_{i_idx}")
                     elif item['type'] == "image":
                         siu = st.file_uploader("사이드 그림", key=f"siu_{shared_store['current_page']}_{s_idx}_{i_idx}")
                         if siu: item['src'] = f"data:image/png;base64,{base64.b64encode(siu.getvalue()).decode()}"
+                        item['width'] = st.slider("너비", 100, 500, int(item.get('width', 350)), key=f"siw_{shared_store['current_page']}_{s_idx}_{i_idx}")
                 
                 if item['type'] == "metric":
                     st.markdown(f"<small>{item['label']}</small><div style='font-size:26px; font-weight:bold; color:{item.get('color', '#007bff')};'>{item['value']}</div>", unsafe_allow_html=True)
