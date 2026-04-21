@@ -25,7 +25,7 @@ shared_store = get_global_store()
 def sync_user_id():
     js_code = """
     <script>
-    const storageKey = 'posco_uid_final_v7';
+    const storageKey = 'posco_uid_final_v9';
     let uid = localStorage.getItem(storageKey);
     if (!uid) {
         uid = 'u_' + Math.random().toString(36).substr(2, 9);
@@ -127,26 +127,22 @@ with st.sidebar:
             st.cache_resource.clear()
             st.rerun()
         
-        uploaded_file = st.file_uploader("JSON 업로드", type=['json', 'js'], key="uploader")
+        uploaded_file = st.file_uploader("JSON 업로드", type=['json', 'js'], key="uploader_v9")
         if uploaded_file:
             try:
                 content = json.loads(uploaded_file.read().decode("utf-8"))
-                # [IndexError 해결 핵심] 데이터 구조 자동 보정
+                # 데이터 보정 로직
                 for p in content.get('pages', []):
                     p.setdefault('show_p', True)
                     p.setdefault('show_img', True)
                     p.setdefault('show_txt', True)
                     if 'metrics' in p:
                         for m in p['metrics']:
-                            # 리스트 길이가 3 이하라면 4번째 자리에 True(표시) 추가
-                            while len(m) < 4:
-                                m.append(True)
-                
+                            while len(m) < 4: m.append(True)
                 if shared_store["report_data"] is None:
                     shared_store["report_data"] = content
                     shared_store["sync_version"] += 1
-            except Exception as e:
-                st.error(f"JSON 형식 오류: {e}")
+            except Exception as e: st.error(f"JSON 형식 오류: {e}")
         
         current_edit_mode = st.toggle("📝 실시간 편집 모드", value=False)
 
@@ -186,38 +182,63 @@ def sync_content_area(edit_enabled):
     p = data['pages'][current_tab_idx]
     st.divider()
     
+    # [복구] 탭 제목 및 가시성 제어 영역
     if is_reporter and edit_enabled:
-        st.subheader("👁️ 섹션 가시성 제어")
-        c1, c2, c3 = st.columns(3)
-        with c1: p['show_p'] = st.checkbox("📑 페이지 표시", value=p.get('show_p', True), key=f"sp_{current_tab_idx}")
-        with c2: p['show_img'] = st.checkbox("🖼️ 그림 표시", value=p.get('show_img', True), key=f"si_{current_tab_idx}")
-        with c3: p['show_txt'] = st.checkbox("📄 본문 표시", value=p.get('show_txt', True), key=f"st_{current_tab_idx}")
+        col_t1, col_t2 = st.columns([3, 1])
+        with col_t1:
+            p['tab'] = st.text_input("🔖 탭(P1) 제목 수정", p.get('tab', ''), key=f"tab_edit_{current_tab_idx}")
+        with col_t2:
+            st.write("👁️ 가시성")
+            p['show_p'] = st.checkbox("페이지", value=p.get('show_p', True), key=f"sp_{current_tab_idx}")
+            shared_store["sync_version"] += 1
 
     col_main, col_side = st.columns([2, 1], gap="large")
     
     with col_main:
         if is_reporter and edit_enabled:
-            p['header'] = st.text_input("📌 제목 수정", p.get('header', ''), key=f"h_{current_tab_idx}")
-            p['content'] = st.text_area("📄 본문 수정", p.get('content', ''), height=200, key=f"c_{current_tab_idx}")
+            p['header'] = st.text_input("📌 리포트 대제목", p.get('header', ''), key=f"h_{current_tab_idx}")
+            # 개별 노출 스위치
+            c_v1, c_v2 = st.columns(2)
+            p['show_img'] = c_v1.checkbox("🖼️ 그림 표시", value=p.get('show_img', True), key=f"si_{current_tab_idx}")
+            p['show_txt'] = c_v2.checkbox("📄 본문 표시", value=p.get('show_txt', True), key=f"st_{current_tab_idx}")
             shared_store["sync_version"] += 1
         
         st.markdown(f"# {p.get('header', '')}")
-        if p.get('show_img', True) and "image" in p: st.image(p["image"], width=800)
+        
+        if p.get('show_img', True) and "image" in p: 
+            st.image(p["image"], use_container_width=True)
+        
         if p.get('show_txt', True):
-            for para in p.get('content', '').split('\n'):
-                if para.strip(): st.markdown(f"### **{para.strip()}**")
+            # [기능 구현] 자유 입력 및 줄 단위 편집
+            content_lines = p.get('content', '').split('\n')
+            new_lines = []
+            
+            for i, line in enumerate(content_lines):
+                if is_reporter and edit_enabled:
+                    # 줄별로 텍스트 입력창 배치 (원하는 위치 수정 가능)
+                    edited_line = st.text_input(f"L{i+1}", line, key=f"line_{current_tab_idx}_{i}")
+                    new_lines.append(edited_line)
+                else:
+                    if line.strip(): st.markdown(f"### {line.strip()}")
+            
+            if is_reporter and edit_enabled:
+                # 줄 추가 버튼
+                if st.button("➕ 아래에 내용 추가", key=f"add_{current_tab_idx}"):
+                    new_lines.append("새로운 내용을 입력하세요.")
+                    shared_store["sync_version"] += 1
+                p['content'] = '\n'.join(new_lines)
+                shared_store["sync_version"] += 1
 
     with col_side:
         st.subheader(p.get('metrics_title', '📊 지표'))
         if "metrics" in p:
             for idx, m in enumerate(p['metrics']):
+                while len(m) < 4: m.append(True)
                 if is_reporter and edit_enabled:
-                    # m[3] 참조 전 안전 장치 (while 루프로 데이터 보정됨)
                     m[3] = st.toggle(f"지표 {idx+1} 노출", value=m[3], key=f"mtog_{current_tab_idx}_{idx}")
                     m[0] = st.text_input(f"라벨{idx}", m[0], key=f"ml_{idx}")
                     m[1] = st.text_input(f"수치{idx}", m[1], key=f"mv_{idx}")
                     shared_store["sync_version"] += 1
-                
                 if m[3] or is_reporter:
                     st.metric(label=m[0] + (" (숨김)" if not m[3] else ""), value=m[1])
 
