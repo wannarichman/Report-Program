@@ -4,40 +4,37 @@ import json
 import time
 import base64
 
-# 1. 페이지 설정 및 프리미엄 디자인 (섹션 임팩트 극대화, 파란선 제거)
+# 1. 페이지 설정 및 클린 디자인 프레임워크
 st.set_page_config(page_title="POSCO E&C AI Live Sync Master", layout="wide")
 
 st.markdown("""
     <style>
-    /* 배경을 약간 더 톤다운하여 흰색 섹션 카드의 대비(Impact)를 높임 */
-    [data-testid="stAppViewContainer"] { background-color: #e2e8f0 !important; }
+    /* 앱 전체 배경을 깨끗한 흰색으로 */
+    [data-testid="stAppViewContainer"] { background-color: #ffffff !important; }
     
-    /* 섹션 메인 카드: 그림자 깊이를 키우고 상단에 다크 네이비 포인트 라인 추가 */
+    /* 메인 화면 컨테이너: 심플하고 세련된 얇은 테두리와 은은한 그림자 */
     .main [data-testid="stVerticalBlockBorderWrapper"] {
         background-color: #ffffff !important;
-        border: 1px solid #cbd5e1 !important; 
-        border-top: 8px solid #1e293b !important; /* 임팩트 있는 다크 네이비 라인 */
+        border: 1px solid #dee2e6 !important; 
         border-radius: 16px !important;
-        padding: 40px !important;
-        box-shadow: 0 20px 40px -10px rgba(0,0,0,0.15) !important; /* 깊고 묵직한 그림자 */
-        margin-bottom: 70px !important; 
+        padding: 35px 40px !important;
+        box-shadow: 0 4px 16px rgba(0,0,0,0.04) !important; 
+        margin-bottom: 50px !important; 
     }
     
-    /* 사이드바 내부 컨테이너 레이아웃 깨짐 방지 */
+    /* 사이드바 내부 컨테이너 레이아웃 유지 */
     [data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"] {
-        border: 1px solid #dee2e6 !important; border-top: none !important;
-        padding: 15px !important; box-shadow: none !important; margin-bottom: 10px !important;
+        border: 1px solid #dee2e6 !important; padding: 15px !important; box-shadow: none !important; margin-bottom: 10px !important;
     }
     
-    /* 사이드 지표 슬롯: 파란 테두리 제거, 깔끔한 미니 카드 스타일 적용 */
+    /* 우측 사이드 슬롯: 파란 테두리 없이 심플한 박스 유지 */
     .side-slot-card {
-        background-color: #ffffff; padding: 20px; border-radius: 12px;
-        border: 1px solid #e2e8f0; margin-bottom: 16px;
-        box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); /* 은은한 입체감 */
+        background-color: #f8f9fa; padding: 20px; border-radius: 12px;
+        border: 1px solid #e9ecef; margin-bottom: 16px;
     }
     
     .text-line { white-space: pre-wrap; word-wrap: break-word; line-height: 1.8; margin-bottom: 10px; color: #334155; }
-    .voice-panel { background: #ffffff; border: 1px solid #e2e8f0; padding: 15px; border-radius: 16px; text-align: center; }
+    .voice-panel { background: #ffffff; border: 1px solid #dee2e6; padding: 15px; border-radius: 16px; text-align: center; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -56,14 +53,14 @@ shared_store = get_global_store()
 def create_empty_page():
     return {
         "tab": "새 페이지", "header": "제목을 입력하세요", "header_fs": 45, "header_color": "#1a1c1e",
-        "sections": [{"title": "새로운 분석 섹션", "title_fs": 32, "lines": [{"text": "내용을 입력하세요", "size": 22, "color": "#1e293b"}], "main_image": None, "side_items": []}]
+        "sections": [{"title": "새로운 분석 섹션", "title_fs": 32, "title_color": "#1a1c1e", "lines": [{"text": "내용을 입력하세요", "size": 22, "color": "#1e293b"}], "main_image": None, "full_width": True, "side_items": []}]
     }
 
 def adapt_json_format(raw_data):
     if isinstance(raw_data, dict) and "pages" in raw_data: return raw_data
     return {"pages": [create_empty_page()]}
 
-# --- [ID 식별 및 음성 시스템] ---
+# --- [ID 식별 및 음성 시스템 (Agora)] ---
 if "user_label" not in st.session_state:
     uid = st.query_params.get("uid", f"u_{int(time.time()*1000)}")
     st.query_params["uid"] = uid
@@ -136,7 +133,7 @@ def main_content_area(edit_enabled):
         msg = c1.text_input("메시지", key="chat_in", label_visibility="collapsed")
         if c2.button("전송") and msg: shared_store["chat_history"].append(f"**{my_label}**: {msg}")
         chat_box = "".join([f"<div style='margin-bottom:6px;'>{m}</div>" for m in shared_store["chat_history"][-10:]])
-        st.markdown(f"<div style='height:120px; overflow-y:auto; background:#ffffff; padding:12px; border-radius:10px; border:1px solid #e2e8f0;'>{chat_box}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='height:120px; overflow-y:auto; background:#f8f9fa; padding:12px; border-radius:10px; border:1px solid #dee2e6;'>{chat_box}</div>", unsafe_allow_html=True)
 
     if shared_store["report_data"] is None:
         st.markdown("<div style='text-align:center; padding:150px; color:#64748b;'><h2>📂 리포트가 초기화되었습니다.</h2></div>", unsafe_allow_html=True)
@@ -156,8 +153,7 @@ def main_content_area(edit_enabled):
             data['pages'].insert(shared_store["current_page"] + 1, create_empty_page())
             shared_store["current_page"] += 1; st.rerun()
         if pc2.button("🗑️ 페이지 삭제") and len(data['pages']) > 1:
-            data['pages'].pop(shared_store["current_page"])
-            shared_store["current_page"] = max(0, shared_store["current_page"] - 1); st.rerun()
+            data['pages'].pop(shared_store["current_page"]); shared_store["current_page"] = max(0, shared_store["current_page"] - 1); st.rerun()
 
     if is_reporter:
         tabs = {i: f"P{i+1}. {pg.get('tab', '')}" for i, pg in enumerate(data['pages'])}
@@ -176,28 +172,46 @@ def main_content_area(edit_enabled):
     # --- [섹션 루프] ---
     sections = p.setdefault('sections', [])
     if edit_enabled and st.button("➕ 새로운 세로 섹션 뭉치 추가", key=f"add_sec_{shared_store['current_page']}"):
-        sections.append({"title": "새 섹션", "title_fs": 32, "lines": [{"text": "내용", "size": 22, "color": "#1e293b"}], "main_image": None, "side_items": []})
+        sections.append({"title": "새 섹션", "title_fs": 32, "title_color": "#1a1c1e", "lines": [{"text": "내용", "size": 22, "color": "#1e293b"}], "main_image": None, "full_width": True, "side_items": []})
         st.rerun()
 
     for s_idx, sec in enumerate(sections):
         with st.container(border=True): 
-            col_main, col_side = st.columns([2.5, 1], gap="large")
+            
+            # [핵심 1] 섹션 제목을 칼럼 분리 전 최상단으로 이동 (전체 너비 차지)
+            if edit_enabled:
+                sc1, sc2, sc3 = st.columns([2, 1, 1])
+                sec['title'] = sc1.text_input(f"섹션 {s_idx+1} 제목", sec.get('title', ''), key=f"st_{shared_store['current_page']}_{s_idx}")
+                sec['title_fs'] = sc2.slider("제목 크기", 10, 80, int(sec.get('title_fs', 32)), key=f"stfs_{shared_store['current_page']}_{s_idx}")
+                sec['title_color'] = sc3.color_picker("제목 색상", sec.get('title_color', '#1a1c1e'), key=f"stc_{shared_store['current_page']}_{s_idx}")
+            
+            # 대제목 렌더링 (하단에 연한 줄을 넣어 내용과 시각적으로 구분)
+            st.markdown(f"<h2 style='font-size:{sec.get('title_fs', 32)}px; color:{sec.get('title_color', '#1a1c1e')}; margin-top: 0; margin-bottom: 20px; padding-bottom: 12px; border-bottom: 2px solid #f8f9fa;'>{sec.get('title')}</h2>", unsafe_allow_html=True)
+
+            # [핵심 2] 좌우 간격(gap)을 "medium"으로 줄여 꽉 차 보이게 설계
+            col_main, col_side = st.columns([2.5, 1], gap="medium")
             
             with col_main:
                 if edit_enabled:
-                    sc1, sc2 = st.columns([3, 1])
-                    sec['title'] = sc1.text_input(f"섹션 {s_idx+1} 제목", sec.get('title', ''), key=f"st_{shared_store['current_page']}_{s_idx}")
-                    sec['title_fs'] = sc2.slider("제목 크기", 10, 80, int(sec.get('title_fs', 32)), key=f"stfs_{shared_store['current_page']}_{s_idx}")
-                    
-                    with st.expander("🖼️ 본문(좌측) 그림 관리"):
-                        img_f = st.file_uploader(f"그림 (S{s_idx+1})", type=['png', 'jpg'], key=f"simg_{shared_store['current_page']}_{s_idx}")
+                    with st.expander("🖼️ 본문(좌측) 그림 및 스케일 관리"):
+                        img_f = st.file_uploader(f"그림 업로드 (S{s_idx+1})", type=['png', 'jpg'], key=f"simg_{shared_store['current_page']}_{s_idx}")
                         if img_f: sec['main_image'] = f"data:image/png;base64,{base64.b64encode(img_f.getvalue()).decode()}"
-                        sec['img_width'] = st.slider("너비", 100, 1200, int(sec.get('img_width', 750)), key=f"sw_{shared_store['current_page']}_{s_idx}")
+                        
+                        # [핵심 3] 그림 자동 꽉 채우기 토글
+                        sec['full_width'] = st.toggle("칼럼 너비 꽉 채우기 (권장)", value=sec.get('full_width', True), key=f"fw_{shared_store['current_page']}_{s_idx}")
+                        if not sec['full_width']:
+                            sec['img_width'] = st.slider("수동 너비 조절", 100, 1200, int(sec.get('img_width', 750)), key=f"sw_{shared_store['current_page']}_{s_idx}")
+                            
                         if st.button("🗑️ 그림 삭제", key=f"simg_del_{shared_store['current_page']}_{s_idx}"): sec['main_image'] = None; st.rerun()
                 
-                st.markdown(f"<h2 style='font-size:{sec.get('title_fs', 32)}px; color:#1a1c1e; margin-bottom: 20px;'>{sec.get('title')}</h2>", unsafe_allow_html=True)
-                if sec.get('main_image'): st.image(sec['main_image'], width=int(sec.get('img_width', 750)))
+                # 그림 출력 시 use_container_width=True 로 완벽한 밸런스 구현
+                if sec.get('main_image'): 
+                    if sec.get('full_width', True):
+                        st.image(sec['main_image'], use_container_width=True)
+                    else:
+                        st.image(sec['main_image'], width=int(sec.get('img_width', 750)))
                 
+                # 텍스트 줄 편집
                 sec.setdefault('lines', [])
                 if edit_enabled:
                     st.caption("📝 본문 문구 스타일 편집 (줄 단위)")
@@ -220,7 +234,7 @@ def main_content_area(edit_enabled):
                 sec.setdefault('side_items', [])
                 if edit_enabled:
                     sc1, sc2 = st.columns(2)
-                    if sc1.button("📊 지표/글자 추가", key=f"am_{shared_store['current_page']}_{s_idx}"): sec['side_items'].append({"type":"metric", "label":"항목", "value":"0", "color":"#007bff", "label_fs": 14, "value_fs": 28}); st.rerun()
+                    if sc1.button("📊 지표/글자 추가", key=f"am_{shared_store['current_page']}_{s_idx}"): sec['side_items'].append({"type":"metric", "label":"항목", "value":"0", "color":"#007bff", "label_fs": 14, "label_color": "#64748b", "value_fs": 28}); st.rerun()
                     if sc2.button("🖼️ 그림 추가", key=f"ai_{shared_store['current_page']}_{s_idx}"): sec['side_items'].append({"type":"image", "src":None, "width":350}); st.rerun()
                 
                 for i_idx, item in enumerate(sec['side_items']):
@@ -228,24 +242,26 @@ def main_content_area(edit_enabled):
                         with st.expander(f"⚙️ {item.get('label', '아이템')} 편집", expanded=True):
                             if st.button("🗑️ 이 아이템 삭제", key=f"sdel_{shared_store['current_page']}_{s_idx}_{i_idx}"): sec['side_items'].pop(i_idx); st.rerun()
                             if item['type'] == "metric":
-                                # [추가됨] 라벨명과 값의 글자 크기를 각각 조절하는 컨트롤
                                 c1, c2 = st.columns(2)
                                 item['label'] = c1.text_input("라벨명", item.get('label', ''), key=f"il_{shared_store['current_page']}_{s_idx}_{i_idx}")
                                 item['value'] = c2.text_input("수치/내용", item.get('value', ''), key=f"iv_{shared_store['current_page']}_{s_idx}_{i_idx}")
-                                c3, c4, c5 = st.columns([1.5, 1.5, 2])
+                                
+                                c3, c4 = st.columns(2)
                                 item['label_fs'] = c3.number_input("라벨 크기", 10, 60, int(item.get('label_fs', 14)), key=f"ilfs_{shared_store['current_page']}_{s_idx}_{i_idx}")
-                                item['value_fs'] = c4.number_input("값 크기", 10, 100, int(item.get('value_fs', 28)), key=f"ivfs_{shared_store['current_page']}_{s_idx}_{i_idx}")
-                                item['color'] = c5.color_picker("색상", item.get('color', '#007bff'), key=f"ic_{shared_store['current_page']}_{s_idx}_{i_idx}")
+                                item['label_color'] = c4.color_picker("라벨 색상", item.get('label_color', '#64748b'), key=f"ilc_{shared_store['current_page']}_{s_idx}_{i_idx}")
+                                
+                                c5, c6 = st.columns(2)
+                                item['value_fs'] = c5.number_input("내용 크기", 10, 100, int(item.get('value_fs', 28)), key=f"ivfs_{shared_store['current_page']}_{s_idx}_{i_idx}")
+                                item['color'] = c6.color_picker("내용 색상", item.get('color', '#007bff'), key=f"ic_{shared_store['current_page']}_{s_idx}_{i_idx}")
                             elif item['type'] == "image":
                                 siu = st.file_uploader("사이드 그림 업로드", key=f"siu_{shared_store['current_page']}_{s_idx}_{i_idx}")
                                 if siu: item['src'] = f"data:image/png;base64,{base64.b64encode(siu.getvalue()).decode()}"
                                 item['width'] = st.slider("사이드 그림 너비", 100, 500, int(item.get('width', 350)), key=f"siw_{shared_store['current_page']}_{s_idx}_{i_idx}")
                     
-                    # 깨지지 않는 HTML 순수 렌더링 (파란선 제거됨)
                     if item['type'] == "metric":
                         html = f"""
                         <div class="side-slot-card">
-                            <div style="font-size:{item.get('label_fs', 14)}px; color:#64748b; margin-bottom:8px;">{item.get('label', '')}</div>
+                            <div style="font-size:{item.get('label_fs', 14)}px; color:{item.get('label_color', '#64748b')}; margin-bottom:8px;">{item.get('label', '')}</div>
                             <div style="font-size:{item.get('value_fs', 28)}px; font-weight:bold; color:{item.get('color', '#007bff')}; line-height:1.2;">{item.get('value', '')}</div>
                         </div>
                         """
