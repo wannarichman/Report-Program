@@ -12,18 +12,17 @@ def get_global_store():
     return {
         "comments": [], 
         "active_users": 0, 
-        "report_data": None,  # 보고자가 업로드한 데이터가 여기에 저장됨
+        "report_data": None,
         "last_sync": time.time()
     }
 
 shared_store = get_global_store()
 
-# 접속자 수 관리
 if "session_counted" not in st.session_state:
     shared_store["active_users"] += 1
     st.session_state.session_counted = True
 
-# 3. 음성 설정 (Twilio/Google STUN)
+# 3. 음성 설정
 def get_ice_servers():
     try:
         import requests
@@ -43,7 +42,6 @@ RTC_CONFIG = RTCConfiguration({"iceServers": get_ice_servers()})
 with st.sidebar:
     st.title("🎙️ Live Briefing")
     
-    # [기능] 접속 현황 및 리셋
     col1, col2 = st.columns([2, 1])
     col1.success(f"👥 접속: **{shared_store['active_users']}명**")
     if col2.button("Reset"):
@@ -53,24 +51,22 @@ with st.sidebar:
 
     st.divider()
 
-    # [기능] 음성 스트리머 (보이스 송출 바 포함)
     webrtc_ctx = webrtc_streamer(
-        key="posco-voice-sync-v6",
+        key="posco-voice-sync-final-v7",
         mode=WebRtcMode.SENDRECV,
         rtc_configuration=RTC_CONFIG,
         media_stream_constraints={"video": False, "audio": True},
     )
 
     if webrtc_ctx.state.playing:
-        st.write("🔊 **보이스 송출/수신 중**")
-        st.progress(0.85)
+        st.write("🔊 **보이스 브리핑 중**")
+        st.progress(0.8)
     else:
-        st.write("🔇 음성 참여 대기 중")
+        st.write("🔇 음성 대기 중")
         st.progress(0)
 
     st.divider()
     
-    # [기능] 실시간 댓글 동기화
     st.subheader("💬 실시간 의견")
     with st.form("comment_form", clear_on_submit=True):
         new_comment = st.text_input("의견 입력")
@@ -85,45 +81,57 @@ with st.sidebar:
 
     st.divider()
     
-    # [중요] 보고자만 파일을 업로드 (업로드 시 전역 공유됨)
     st.subheader("📂 보고서 컨트롤")
-    uploaded_file = st.file_uploader("보고서 업로드 (보고자용)", type=['json', 'js'])
+    uploaded_file = st.file_uploader("JSON 업로드 (보고자)", type=['json', 'js'])
     if uploaded_file:
         try:
             shared_store["report_data"] = json.loads(uploaded_file.read().decode("utf-8"))
-            shared_store["last_sync"] = time.time()
         except:
             st.error("파일 로드 실패")
 
-    edit_mode = st.toggle("📝 편집 모드 활성화", value=False)
-
-    # 5초마다 데이터 동기화 확인 (마이크 유지형)
-    if time.time() - shared_store["last_sync"] > 5:
+    edit_mode = st.toggle("📝 전체 편집 모드 활성화", value=False)
+    if st.button("🔄 최신 화면 동기화"):
         st.rerun()
 
-# 4. 리포트 본문 (전역 데이터 기반 렌더링)
-# 보고받는 자는 파일을 안 올려도 shared_store["report_data"]가 있으면 화면이 뜹니다.
+# 4. 리포트 본문 (상세 편집 기능 포함)
 if shared_store["report_data"]:
     data = shared_store["report_data"]
     
+    # [편집] 전체 제목 수정
     if edit_mode:
-        data['title'] = st.text_input("리포트 전체 제목 수정", data.get('title', ''))
+        data['title'] = st.text_input("💎 리포트 전체 제목 수정", data.get('title', ''))
     st.title(data.get('title', 'AI R&D Report'))
     st.divider()
 
-    tabs = st.tabs([f"P{i+1}. {p.get('tab', '')}" for i, p in enumerate(data['pages'])])
+    # [편집] 각 탭 제목 수정
+    tab_labels = []
+    for i, p in enumerate(data['pages']):
+        if edit_mode:
+            p['tab'] = st.text_input(f"🔖 P{i+1} 탭 이름 수정", p.get('tab', ''), key=f"te_{i}")
+        tab_labels.append(f"P{i+1}. {p.get('tab', '')}")
+
+    tabs = st.tabs(tab_labels)
+    
     for i, tab in enumerate(tabs):
         with tab:
             p = data['pages'][i]
             col_main, col_side = st.columns([1.6, 1])
+            
             with col_main:
+                # [편집] 헤더 및 본문 텍스트 수정
                 if edit_mode:
-                    p['header'] = st.text_input(f"P{i+1} 헤더", p.get('header', ''), key=f"h_{i}")
-                    p['content'] = st.text_area(f"P{i+1} 본문", p.get('content', ''), key=f"c_{i}")
+                    p['header'] = st.text_input(f"📌 P{i+1} 헤더 수정", p.get('header', ''), key=f"he_{i}")
+                    p['content'] = st.text_area(f"📄 P{i+1} 본문 글자 수정", p.get('content', ''), height=250, key=f"ce_{i}")
+                    
+                    # [편집] 그림 크기(너비) 수정 기능 추가
+                    if 'img_width' not in p: p['img_width'] = 700
+                    p['img_width'] = st.slider(f"🖼️ P{i+1} 그림 크기 조절", 100, 1200, int(p['img_width']), key=f"ie_{i}")
                 
                 st.markdown(f"## {p.get('header', '')}")
+                
                 if "image" in p:
-                    st.image(p["image"], use_container_width=True)
+                    # 저장된 너비 값(img_width)을 적용하여 이미지 출력
+                    st.image(p["image"], width=p.get('img_width', 700))
                 
                 for para in p.get('content', '').split('\n'):
                     if para.strip():
@@ -133,14 +141,28 @@ if shared_store["report_data"]:
                     st.warning(f"🗨️ **실시간 피드백:** {shared_store['comments'][0]}")
 
             with col_side:
-                st.subheader(p.get('metrics_title', '📊 지표'))
+                # [편집] 지표 영역 제목 및 개별 지표 수정
+                if 'metrics_title' not in p: p['metrics_title'] = "📊 주요 지표"
+                if edit_mode:
+                    p['metrics_title'] = st.text_input(f"📊 지표 제목 수정", p['metrics_title'], key=f"mte_{i}")
+                st.subheader(p['metrics_title'])
+
                 if "metrics" in p:
                     for idx, m in enumerate(p['metrics']):
                         if edit_mode:
-                            m[0], m[1], m[2] = st.text_input(f"명칭{idx}", m[0], key=f"ml_{i}_{idx}"), st.text_input(f"수치{idx}", m[1], key=f"mv_{i}_{idx}"), st.text_input(f"상태{idx}", m[2], key=f"md_{i}_{idx}")
+                            m[0] = st.text_input(f"항목{idx}", m[0], key=f"ml_{i}_{idx}")
+                            m[1] = st.text_input(f"수치{idx}", m[1], key=f"mv_{i}_{idx}")
+                            m[2] = st.text_input(f"상태{idx}", m[2], key=f"md_{i}_{idx}")
                         st.metric(label=m[0], value=m[1], delta=m[2])
     
     if edit_mode:
-        st.download_button("수정본 저장", json.dumps(data, indent=2, ensure_ascii=False), "final_report.json")
+        st.divider()
+        # 수정된 내용을 담은 새로운 JSON 파일 생성
+        st.download_button(
+            label="💾 수정된 전체 보고서 JSON 저장",
+            data=json.dumps(data, indent=2, ensure_ascii=False),
+            file_name="edited_report.json",
+            mime="application/json"
+        )
 else:
-    st.info("📢 보고자가 파일을 업로드할 때까지 대기 중입니다. 접속 인원을 확인하세요.")
+    st.info("📢 보고자가 파일을 업로드할 때까지 대기 중입니다.")
