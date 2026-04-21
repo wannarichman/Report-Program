@@ -21,11 +21,11 @@ def get_global_store():
 
 shared_store = get_global_store()
 
-# --- [ID 동기화 로직] ---
+# [ID 동기화 로직]
 def sync_user_id():
     js_code = """
     <script>
-    const storageKey = 'posco_uid_final';
+    const storageKey = 'posco_uid_final_v5';
     let uid = localStorage.getItem(storageKey);
     if (!uid) {
         uid = 'u_' + Math.random().toString(36).substr(2, 9);
@@ -138,6 +138,10 @@ with st.sidebar:
         if uploaded_file:
             content = json.loads(uploaded_file.read().decode("utf-8"))
             if shared_store["report_data"] is None:
+                # 초기 가시성 설정 주입
+                for p in content['pages']:
+                    if 'show_img' not in p: p['show_img'] = True
+                    if 'show_txt' not in p: p['show_txt'] = True
                 shared_store["report_data"] = content
                 shared_store["sync_version"] += 1
         current_edit_mode = st.toggle("📝 실시간 편집 모드", value=False)
@@ -174,29 +178,39 @@ def sync_content_area(edit_enabled):
         if current_tab_idx >= len(tab_labels): current_tab_idx = 0
         st.warning(f"📍 현재 브리핑 위치: **{tab_labels[current_tab_idx]}**")
 
-    # --- 본문 및 편집 영역 복구 ---
+    # --- 본문 영역 ---
     p = data['pages'][current_tab_idx]
     st.divider()
+    
+    # 보고자 편집 모드: 노출 제어 스위치
+    if is_reporter and edit_enabled:
+        col_e1, col_e2, col_e3 = st.columns(3)
+        with col_e1:
+            p['show_img'] = st.checkbox("🖼️ 그림 표시", value=p.get('show_img', True), key=f"si_{current_tab_idx}")
+        with col_e2:
+            p['show_txt'] = st.checkbox("📄 본문 표시", value=p.get('show_txt', True), key=f"st_{current_tab_idx}")
+        with col_e3:
+            if st.button("💾 현재 상태 JSON 저장"):
+                shared_store["sync_version"] += 1
+
     col_main, col_side = st.columns([2, 1], gap="large")
     
     with col_main:
         if is_reporter and edit_enabled:
-            # P1, P2 등 탭 제목 수정 기능 복구
-            new_tab = st.text_input("🔖 탭 이름 수정 (P1, P2...)", p.get('tab', ''), key=f"t_{current_tab_idx}")
-            new_header = st.text_input("📌 제목 수정", p.get('header', ''), key=f"h_{current_tab_idx}")
-            new_content = st.text_area("📄 본문 수정", p.get('content', ''), height=250, key=f"c_{current_tab_idx}")
-            
-            # 변경 감지 시 즉각 반영
-            if new_tab != p.get('tab') or new_header != p.get('header') or new_content != p.get('content'):
-                p['tab'], p['header'], p['content'] = new_tab, new_header, new_content
-                shared_store["sync_version"] += 1
+            p['tab'] = st.text_input("🔖 탭 이름 수정", p.get('tab', ''), key=f"t_{current_tab_idx}")
+            p['header'] = st.text_input("📌 제목 수정", p.get('header', ''), key=f"h_{current_tab_idx}")
+            p['content'] = st.text_area("📄 본문 수정", p.get('content', ''), height=200, key=f"c_{current_tab_idx}")
+            shared_store["sync_version"] += 1
         
         st.markdown(f"# {p.get('header', '')}")
-        if "image" in p: 
-            # 엑스박스 방지: URL 형식인지 확인 필수
+        
+        # [기능 구현] 가시성 조건부 렌더링
+        if p.get('show_img', True) and "image" in p: 
             st.image(p["image"], width=800)
-        for para in p.get('content', '').split('\n'):
-            if para.strip(): st.markdown(f"### **{para.strip()}**")
+        
+        if p.get('show_txt', True):
+            for para in p.get('content', '').split('\n'):
+                if para.strip(): st.markdown(f"### **{para.strip()}**")
 
     with col_side:
         st.subheader(p.get('metrics_title', '📊 지표'))
