@@ -13,7 +13,7 @@ def get_global_store():
         "report_data": None,
         "current_page": 0,
         "active_users": 0,
-        "user_list": {}, # 식별값(UUID): 라벨(참여자N) 매핑
+        "user_labels": {}, # {UUID: "참여자 N"} 맵핑 저장
         "sync_version": 0,
         "chat_logs": [],
         "voice_channel": "posco_briefing_room"
@@ -21,34 +21,46 @@ def get_global_store():
 
 shared_store = get_global_store()
 
-# [재접속 방지 핵심 로직: 브라우저 스토리지를 활용한 유저 식별]
-def get_user_identity():
-    # JavaScript를 사용하여 브라우저 로컬 스토리지에 ID를 저장하고 가져옴
+# --- [브라우저 쿠키/로컬스토리지를 이용한 유저 고정 로직] ---
+def sync_user_id():
+    # 브라우저에 저장된 ID를 체크하고 없으면 생성하여 Streamlit으로 전송
     js_code = """
     <script>
-    const storageKey = 'posco_report_user_id';
-    let userId = localStorage.getItem(storageKey);
-    if (!userId) {
-        userId = 'user_' + Math.random().toString(36).substr(2, 9);
-        localStorage.setItem(storageKey, userId);
+    const storageKey = 'posco_report_uid_v1';
+    let uid = localStorage.getItem(storageKey);
+    if (!uid) {
+        uid = 'u_' + Math.random().toString(36).substr(2, 9);
+        localStorage.setItem(storageKey, uid);
     }
-    window.parent.postMessage({type: 'set_user_id', value: userId}, '*');
+    const streamlitDoc = window.parent.document;
+    const url = new URL(window.location.href);
+    if (url.searchParams.get('uid') !== uid) {
+        url.searchParams.set('uid', uid);
+        window.parent.location.href = url.href;
+    }
     </script>
     """
     components.html(js_code, height=0)
-    
-    # Streamlit 세션 스테이트에 ID가 없으면 임시 생성 (최초 로드용)
-    if "temp_uuid" not in st.session_state:
-        st.session_state.temp_uuid = None
 
-# 브라우저로부터 ID를 수신하는 핸들러 (Query Params 활용은 한계가 있어 세션과 공유 저장소 결합)
+# URL 파라미터에서 유저 고유 ID 추출
+query_params = st.query_params
+browser_uid = query_params.get("uid")
+
 if "user_label" not in st.session_state:
-    shared_store["active_users"] += 1
-    st.session_state.user_num = shared_store["active_users"]
-    st.session_state.user_label = f"참여자 {st.session_state.user_num}"
-    # 유저 리스트에 추가 (간단한 구현을 위해 일단 번호 유지)
-    if st.session_state.user_label not in shared_store["user_list"].values():
-        shared_store["user_list"][st.session_state.user_num] = st.session_state.user_label
+    if browser_uid:
+        # 이미 이 브라우저로 접속한 기록이 있는 경우
+        if browser_uid in shared_store["user_labels"]:
+            st.session_state.user_label = shared_store["user_labels"][browser_uid]
+        else:
+            # 처음 접속인 경우 번호 부여
+            shared_store["active_users"] += 1
+            new_label = f"참여자 {shared_store['active_users']}"
+            shared_store["user_labels"][browser_uid] = new_label
+            st.session_state.user_label = new_label
+    else:
+        # ID 수신 전 임시 처리
+        sync_user_id()
+        st.session_state.user_label = "접속 중..."
 
 # 3. [Agora 음성 컴포넌트]
 def agora_voice_component(app_id, channel, role):
@@ -118,17 +130,17 @@ with st.sidebar:
         agora_voice_component(app_id=agora_id, channel=shared_store["voice_channel"], role="reporter" if is_reporter else "audience")
     except: st.warning("⚠️ Agora ID 설정 필요")
 
-    with st.expander(f"👥 현재 참여자 ({len(shared_store['user_list']) + 1}명)", expanded=False):
+    with st.expander(f"👥 현재 참여자 ({len(shared_store['user_labels']) + 1}명)", expanded=False):
         st.write(f"- {'**📢 보고자 (나)**' if is_reporter else '📢 보고자'}")
-        for user in shared_store["user_list"].values():
-            if not is_reporter and user == st.session_state.user_label:
-                st.write(f"- **👤 {user} (나)**")
-            else: st.write(f"- 👤 {user}")
+        for label in shared_store["user_labels"].values():
+            if not is_reporter and label == st.session_state.user_label:
+                st.write(f"- **👤 {label} (나)**")
+            else: st.write(f"- 👤 {label}")
 
     if is_reporter:
         st.divider()
         if st.button("🚨 시스템 전체 초기화", use_container_width=True):
-            shared_store.update({"report_data": None, "chat_logs": [], "sync_version": shared_store["sync_version"]+1, "active_users": 0, "user_list": {}})
+            shared_store.update({"report_data": None, "chat_logs": [], "sync_version": shared_store["sync_version"]+1, "active_users": 0, "user_labels": {}})
             st.cache_resource.clear()
             st.rerun()
         uploaded_file = st.file_uploader("JSON 업로드", type=['json', 'js'])
