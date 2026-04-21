@@ -4,35 +4,36 @@ import json
 import time
 import base64
 
-# 1. 페이지 설정 및 프리미엄 디자인 프레임워크 (CSS 전면 개편 및 충돌 방지)
+# 1. 페이지 설정 및 프리미엄 디자인 (섹션 임팩트 극대화, 파란선 제거)
 st.set_page_config(page_title="POSCO E&C AI Live Sync Master", layout="wide")
 
 st.markdown("""
     <style>
-    /* 앱 전체 배경색 */
-    [data-testid="stAppViewContainer"] { background-color: #eef2f6 !important; }
+    /* 배경을 약간 더 톤다운하여 흰색 섹션 카드의 대비(Impact)를 높임 */
+    [data-testid="stAppViewContainer"] { background-color: #e2e8f0 !important; }
     
-    /* [핵심] 메인 화면의 컨테이너를 완벽한 '독립된 고급 카드'로 래핑 */
+    /* 섹션 메인 카드: 그림자 깊이를 키우고 상단에 다크 네이비 포인트 라인 추가 */
     .main [data-testid="stVerticalBlockBorderWrapper"] {
         background-color: #ffffff !important;
-        border: none !important; 
-        border-top: 7px solid #005ab5 !important; 
+        border: 1px solid #cbd5e1 !important; 
+        border-top: 8px solid #1e293b !important; /* 임팩트 있는 다크 네이비 라인 */
         border-radius: 16px !important;
-        padding: 35px 40px !important;
-        box-shadow: 0 12px 40px rgba(0,0,0,0.08) !important; 
-        margin-bottom: 60px !important; 
+        padding: 40px !important;
+        box-shadow: 0 20px 40px -10px rgba(0,0,0,0.15) !important; /* 깊고 묵직한 그림자 */
+        margin-bottom: 70px !important; 
     }
     
-    /* 사이드바 내부의 컨테이너는 원래 스타일 유지 (레이아웃 깨짐 방지) */
+    /* 사이드바 내부 컨테이너 레이아웃 깨짐 방지 */
     [data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"] {
         border: 1px solid #dee2e6 !important; border-top: none !important;
         padding: 15px !important; box-shadow: none !important; margin-bottom: 10px !important;
     }
     
-    /* 사이드 지표 슬롯: HTML 렌더링 전용 클래스 */
+    /* 사이드 지표 슬롯: 파란 테두리 제거, 깔끔한 미니 카드 스타일 적용 */
     .side-slot-card {
-        background-color: #f8fafc; padding: 20px; border-radius: 14px;
-        border: 1px solid #edf2f7; border-left: 6px solid #3b82f6; margin-bottom: 16px;
+        background-color: #ffffff; padding: 20px; border-radius: 12px;
+        border: 1px solid #e2e8f0; margin-bottom: 16px;
+        box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); /* 은은한 입체감 */
     }
     
     .text-line { white-space: pre-wrap; word-wrap: break-word; line-height: 1.8; margin-bottom: 10px; color: #334155; }
@@ -62,7 +63,7 @@ def adapt_json_format(raw_data):
     if isinstance(raw_data, dict) and "pages" in raw_data: return raw_data
     return {"pages": [create_empty_page()]}
 
-# --- [ID 식별 및 음성 시스템 (Agora)] ---
+# --- [ID 식별 및 음성 시스템] ---
 if "user_label" not in st.session_state:
     uid = st.query_params.get("uid", f"u_{int(time.time()*1000)}")
     st.query_params["uid"] = uid
@@ -112,8 +113,6 @@ with st.sidebar:
     if is_reporter:
         st.divider()
         uploaded_file = st.file_uploader("📂 JSON 로드", type=['json'])
-        
-        # 파일 로드 시 중복 덮어쓰기 방지 버그 패치 유지
         if uploaded_file:
             if st.session_state.get("last_uploaded_id") != uploaded_file.file_id:
                 shared_store["report_data"] = adapt_json_format(json.loads(uploaded_file.read().decode("utf-8")))
@@ -122,8 +121,7 @@ with st.sidebar:
                 
         if st.button("🚨 전체 데이터 초기화"):
             shared_store.update({"report_data": None, "current_page": 0, "chat_history": []})
-            st.session_state.pop("last_uploaded_id", None)
-            st.rerun()
+            st.session_state.pop("last_uploaded_id", None); st.rerun()
             
         if shared_store["report_data"]:
             st.download_button("📥 최종 마스터 JSON 저장", data=json.dumps(shared_store["report_data"], indent=4, ensure_ascii=False), file_name="Master_Final.json", use_container_width=True)
@@ -147,11 +145,8 @@ def main_content_area(edit_enabled):
         return
 
     data = shared_store["report_data"]
-    
-    # 인덱스 에러 안전 장치 유지
     if shared_store["current_page"] >= len(data['pages']):
         shared_store["current_page"] = max(0, len(data['pages']) - 1)
-
     p = data['pages'][shared_store["current_page"]]
     
     if edit_enabled:
@@ -169,7 +164,6 @@ def main_content_area(edit_enabled):
         shared_store["current_page"] = st.radio("📑 이동", list(tabs.keys()), index=shared_store["current_page"], format_func=lambda x: tabs[x], horizontal=True)
         if edit_enabled: p['tab'] = st.text_input("🔖 탭 이름", p.get('tab', ''), key=f"t_ed_{shared_store['current_page']}")
 
-    # 대제목 렌더링
     if edit_enabled:
         with st.expander("📌 대제목 디자인 설정"):
             p['header'] = st.text_input("제목 내용", p.get('header', ''), key="h_ed")
@@ -179,20 +173,18 @@ def main_content_area(edit_enabled):
 
     st.markdown(f'<h1 style="text-align:center; font-size:{p.get("header_fs", 45)}px; color:{p.get("header_color", "#1a1c1e")}; padding-bottom:20px;">{p.get("header")}</h1>', unsafe_allow_html=True)
 
-    # --- [섹션 루프: 완벽한 카드 컨테이너 적용] ---
+    # --- [섹션 루프] ---
     sections = p.setdefault('sections', [])
-    if edit_enabled and st.button("➕ 새로운 세로 섹션 카드 추가", key=f"add_sec_{shared_store['current_page']}"):
+    if edit_enabled and st.button("➕ 새로운 세로 섹션 뭉치 추가", key=f"add_sec_{shared_store['current_page']}"):
         sections.append({"title": "새 섹션", "title_fs": 32, "lines": [{"text": "내용", "size": 22, "color": "#1e293b"}], "main_image": None, "side_items": []})
         st.rerun()
 
     for s_idx, sec in enumerate(sections):
-        # [핵심] Streamlit의 네이티브 컨테이너 사용 (CSS가 이 상자를 '고급 카드'로 만듭니다)
         with st.container(border=True): 
             col_main, col_side = st.columns([2.5, 1], gap="large")
             
             with col_main:
                 if edit_enabled:
-                    # [추가됨] 섹션 제목 글자 크기 조절
                     sc1, sc2 = st.columns([3, 1])
                     sec['title'] = sc1.text_input(f"섹션 {s_idx+1} 제목", sec.get('title', ''), key=f"st_{shared_store['current_page']}_{s_idx}")
                     sec['title_fs'] = sc2.slider("제목 크기", 10, 80, int(sec.get('title_fs', 32)), key=f"stfs_{shared_store['current_page']}_{s_idx}")
@@ -203,12 +195,9 @@ def main_content_area(edit_enabled):
                         sec['img_width'] = st.slider("너비", 100, 1200, int(sec.get('img_width', 750)), key=f"sw_{shared_store['current_page']}_{s_idx}")
                         if st.button("🗑️ 그림 삭제", key=f"simg_del_{shared_store['current_page']}_{s_idx}"): sec['main_image'] = None; st.rerun()
                 
-                # 섹션 제목 출력 (조절된 크기 반영)
-                st.markdown(f"<h2 style='font-size:{sec.get('title_fs', 32)}px; color:#1a1c1e;'>{sec.get('title')}</h2>", unsafe_allow_html=True)
-                
+                st.markdown(f"<h2 style='font-size:{sec.get('title_fs', 32)}px; color:#1a1c1e; margin-bottom: 20px;'>{sec.get('title')}</h2>", unsafe_allow_html=True)
                 if sec.get('main_image'): st.image(sec['main_image'], width=int(sec.get('img_width', 750)))
                 
-                # 텍스트 줄 편집
                 sec.setdefault('lines', [])
                 if edit_enabled:
                     st.caption("📝 본문 문구 스타일 편집 (줄 단위)")
@@ -231,29 +220,33 @@ def main_content_area(edit_enabled):
                 sec.setdefault('side_items', [])
                 if edit_enabled:
                     sc1, sc2 = st.columns(2)
-                    if sc1.button("📊 지표 추가", key=f"am_{shared_store['current_page']}_{s_idx}"): sec['side_items'].append({"type":"metric", "label":"항목", "value":"0", "color":"#007bff"}); st.rerun()
+                    if sc1.button("📊 지표/글자 추가", key=f"am_{shared_store['current_page']}_{s_idx}"): sec['side_items'].append({"type":"metric", "label":"항목", "value":"0", "color":"#007bff", "label_fs": 14, "value_fs": 28}); st.rerun()
                     if sc2.button("🖼️ 그림 추가", key=f"ai_{shared_store['current_page']}_{s_idx}"): sec['side_items'].append({"type":"image", "src":None, "width":350}); st.rerun()
                 
                 for i_idx, item in enumerate(sec['side_items']):
-                    # [핵심] 편집 UI(Streamlit 위젯)와 출력 UI(순수 HTML)를 분리하여 렌더링 충돌(기괴한 바) 원천 차단
                     if edit_enabled:
                         with st.expander(f"⚙️ {item.get('label', '아이템')} 편집", expanded=True):
                             if st.button("🗑️ 이 아이템 삭제", key=f"sdel_{shared_store['current_page']}_{s_idx}_{i_idx}"): sec['side_items'].pop(i_idx); st.rerun()
                             if item['type'] == "metric":
-                                item['label'] = st.text_input("지표명", item.get('label', ''), key=f"il_{shared_store['current_page']}_{s_idx}_{i_idx}")
-                                item['value'] = st.text_input("수치 값", item.get('value', ''), key=f"iv_{shared_store['current_page']}_{s_idx}_{i_idx}")
-                                item['color'] = st.color_picker("수치 색상", item.get('color', '#007bff'), key=f"ic_{shared_store['current_page']}_{s_idx}_{i_idx}")
+                                # [추가됨] 라벨명과 값의 글자 크기를 각각 조절하는 컨트롤
+                                c1, c2 = st.columns(2)
+                                item['label'] = c1.text_input("라벨명", item.get('label', ''), key=f"il_{shared_store['current_page']}_{s_idx}_{i_idx}")
+                                item['value'] = c2.text_input("수치/내용", item.get('value', ''), key=f"iv_{shared_store['current_page']}_{s_idx}_{i_idx}")
+                                c3, c4, c5 = st.columns([1.5, 1.5, 2])
+                                item['label_fs'] = c3.number_input("라벨 크기", 10, 60, int(item.get('label_fs', 14)), key=f"ilfs_{shared_store['current_page']}_{s_idx}_{i_idx}")
+                                item['value_fs'] = c4.number_input("값 크기", 10, 100, int(item.get('value_fs', 28)), key=f"ivfs_{shared_store['current_page']}_{s_idx}_{i_idx}")
+                                item['color'] = c5.color_picker("색상", item.get('color', '#007bff'), key=f"ic_{shared_store['current_page']}_{s_idx}_{i_idx}")
                             elif item['type'] == "image":
                                 siu = st.file_uploader("사이드 그림 업로드", key=f"siu_{shared_store['current_page']}_{s_idx}_{i_idx}")
                                 if siu: item['src'] = f"data:image/png;base64,{base64.b64encode(siu.getvalue()).decode()}"
                                 item['width'] = st.slider("사이드 그림 너비", 100, 500, int(item.get('width', 350)), key=f"siw_{shared_store['current_page']}_{s_idx}_{i_idx}")
                     
-                    # 깨지지 않는 순수 HTML 블록 렌더링
+                    # 깨지지 않는 HTML 순수 렌더링 (파란선 제거됨)
                     if item['type'] == "metric":
                         html = f"""
                         <div class="side-slot-card">
-                            <div style="font-size:14px; color:#64748b; margin-bottom:5px;">{item.get('label', '')}</div>
-                            <div style="font-size:28px; font-weight:bold; color:{item.get('color', '#007bff')};">{item.get('value', '')}</div>
+                            <div style="font-size:{item.get('label_fs', 14)}px; color:#64748b; margin-bottom:8px;">{item.get('label', '')}</div>
+                            <div style="font-size:{item.get('value_fs', 28)}px; font-weight:bold; color:{item.get('color', '#007bff')}; line-height:1.2;">{item.get('value', '')}</div>
                         </div>
                         """
                         st.markdown(html, unsafe_allow_html=True)
