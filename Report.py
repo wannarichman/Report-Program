@@ -144,4 +144,4 @@ if shared_store["report_data"]:
     if edit_mode and is_master:
         st.download_button("💾 수정본 저장", json.dumps(data, indent=2, ensure_ascii=False), "sync_report.json")
 else:
-    st.info("📢 마스터가 보고서를 로드할 때까지 대기 중입니다.")
+    st.info("📢 보고자가 보고서를 로드할 때까지 대기 중입니다.")
