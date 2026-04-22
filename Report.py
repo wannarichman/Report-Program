@@ -60,16 +60,6 @@ st.markdown("""
     }
     
     /* 음성 연결/음소거 버튼 스타일링 */
-    .btn-join { 
-        padding: 8px 16px; 
-        background: #007bff; 
-        color: white; 
-        border: none; 
-        border-radius: 8px; 
-        cursor: pointer; 
-        font-weight: bold; 
-        width: 100%;
-    }
     .btn-mute { 
         padding: 8px 16px; 
         background: #6c757d; 
@@ -107,11 +97,14 @@ shared_store = get_global_store()
 # ==========================================
 def get_sample_json_guide():
     return {
+        "title": "전체 보고서 공통 제목",    # [신규] 문서 전체 제목
+        "title_fs": 55,                     # [신규] 전체 제목 크기
+        "title_color": "#0f172a",           # [신규] 전체 제목 색상
         "pages": [{
             "tab": "샘플 페이지",
-            "header": "여기에 전체 리포트 제목 입력",
-            "header_fs": 45,
-            "header_color": "#1a1c1e",
+            "header": "여기에 페이지별 소제목 입력",
+            "header_fs": 35,
+            "header_color": "#475569",
             "sections": [{
                 "title": "섹션 제목",
                 "title_fs": 32,
@@ -132,13 +125,15 @@ def create_empty_page():
 
 def adapt_json_format(raw_data):
     if isinstance(raw_data, dict) and "pages" in raw_data: 
+        # 기존 로드된 데이터에 제목 정보가 없는 경우 기본값 삽입
+        if "title" not in raw_data:
+            raw_data.update({"title": "AI 기반 보고 간소화 플랫폼", "title_fs": 55, "title_color": "#0f172a"})
         return raw_data
-    return {"pages": [create_empty_page()]}
+    return get_sample_json_guide()
 
 # ==========================================
-# 4. ID 식별 및 음성 시스템 (Bug Fix Version)
+# 4. ID 식별 및 음성 시스템 (모든 정교한 로직 보존)
 # ==========================================
-# [중복 방지] URL UID 고정 로직
 if "uid" not in st.session_state:
     url_uid = st.query_params.get("uid")
     if url_uid:
@@ -209,7 +204,6 @@ def agora_voice_system(app_id, channel, user_label):
     """
     components.html(custom_html, height=160)
 
-# [수정] 참여자 화면 실시간 동기화 및 '마이크 연결자' 전용 필터링 프래그먼트
 @st.fragment(run_every="1s")
 def sync_member_list(my_uid):
     with st.container(border=True):
@@ -218,7 +212,6 @@ def sync_member_list(my_uid):
         temp_sessions = {}
         
         for uid, info in shared_store["active_sessions"].items():
-            # [핵심] 6초 이내 활동 중이고 + 마이크 연결(voice_connected) 상태인 사람만 필터링
             if (now - info["last_seen"] < 6) and info.get("voice_connected"):
                 base_label = info["label"]
                 is_me = (uid == my_uid)
@@ -241,7 +234,6 @@ with st.sidebar:
     is_reporter = st.toggle("🔑 보고자 권한 (편집기능 활성화)", value=False)
     my_label = "📢 보고자" if is_reporter else f"👤 {st.session_state.user_label}"
     
-    # [핵심 추가] 단순 웹 접속과 보이스 연결을 분리하는 연결 토글
     voice_connect = st.toggle("🔊 마이크 연결 (시스템 접속)", value=False, key="voice_active_toggle")
     
     if voice_connect:
@@ -251,7 +243,6 @@ with st.sidebar:
         except: 
             st.warning("⚠️ Agora ID 설정 필요")
 
-    # 명단 출력 (프래그먼트 호출)
     sync_member_list(st.session_state.uid)
 
     if is_reporter:
@@ -295,7 +286,6 @@ with st.sidebar:
 # ==========================================
 @st.fragment(run_every="1s")
 def main_content_area(edit_enabled):
-    # 하트비트 갱신 시 현재 마이크 연결 여부(voice_connect)를 서버에 기록
     shared_store["active_sessions"][st.session_state.uid] = {
         "label": my_label,
         "last_seen": time.time(),
@@ -315,16 +305,29 @@ def main_content_area(edit_enabled):
     if shared_store["report_data"] is None:
         st.markdown("<div style='text-align:center; padding:150px; color:#64748b;'><h2>📂 리포트를 로드하거나 양식을 다운로드하세요.</h2></div>", unsafe_allow_html=True)
         if edit_enabled and st.button("📄 완전히 새로운 보고서 시작하기"):
-            shared_store["report_data"] = {"pages": [create_empty_page()]}
+            shared_store["report_data"] = adapt_json_format({})
             st.rerun()
         return
 
     data = shared_store["report_data"]
+    
+    # --- [핵심 추가] 6-3. 전체 문서 공통 제목 설정 및 렌더링 ---
+    if edit_enabled:
+        with st.expander("👑 전체 문서 공통 제목 설정", expanded=True):
+            data['title'] = st.text_input("문서 전체 제목", data.get('title', '새로운 보고서'), key="doc_title_in")
+            dtc1, dtc2 = st.columns(2)
+            data['title_fs'] = dtc1.slider("제목 글자 크기", 20, 120, int(data.get('title_fs', 55)))
+            data['title_color'] = dtc2.color_picker("제목 색상", data.get('title_color', '#0f172a'))
+
+    # 최상단에 공통 제목 출력
+    st.markdown(f'<h1 style="text-align:center; font-size:{data.get("title_fs", 55)}px; color:{data.get("title_color", "#0f172a")}; margin-bottom:10px;">{data.get("title", "")}</h1>', unsafe_allow_html=True)
+    st.markdown("<hr style='margin-top:0; margin-bottom:40px; border:0; border-top:1px solid #eee;'>", unsafe_allow_html=True)
+
     if shared_store["current_page"] >= len(data['pages']):
         shared_store["current_page"] = max(0, len(data['pages']) - 1)
     p = data['pages'][shared_store["current_page"]]
     
-    # --- 6-3. 페이지 관리 (복구 완료) ---
+    # --- 6-4. 페이지 관리 및 탭 내비게이션 ---
     if edit_enabled:
         st.write("---")
         pc1, pc2 = st.columns([1, 5])
@@ -343,17 +346,17 @@ def main_content_area(edit_enabled):
         if edit_enabled: 
             p['tab'] = st.text_input("🔖 탭 이름 수정", p.get('tab', ''), key=f"t_ed_{shared_store['current_page']}")
 
-    # --- 6-4. 대제목 설정 (복구 완료) ---
+    # --- 6-5. 페이지별 소제목 설정 및 렌더링 ---
     if edit_enabled:
-        with st.expander("📌 페이지 대제목 디자인 설정"):
-            p['header'] = st.text_input("제목 내용", p.get('header', ''), key="h_ed")
+        with st.expander("📌 페이지별 소제목 디자인 설정"):
+            p['header'] = st.text_input("소제목 내용", p.get('header', ''), key=f"ph_{shared_store['current_page']}")
             hc1, hc2 = st.columns(2)
-            p['header_fs'] = hc1.slider("제목 크기", 10, 150, int(p.get('header_fs', 45)))
-            p['header_color'] = hc2.color_picker("제목 색상", p.get('header_color', '#1a1c1e'))
+            p['header_fs'] = hc1.slider("소제목 크기", 10, 80, int(p.get('header_fs', 35)))
+            p['header_color'] = hc2.color_picker("소제목 색상", p.get('header_color', '#475569'))
 
-    st.markdown(f'<h1 style="text-align:center; font-size:{p.get("header_fs", 45)}px; color:{p.get("header_color", "#1a1c1e")}; padding-bottom:20px;">{p.get("header")}</h1>', unsafe_allow_html=True)
+    st.markdown(f'<h2 style="text-align:center; font-size:{p.get("header_fs", 35)}px; color:{p.get("header_color", "#475569")}; margin-bottom:30px;">{p.get("header", "")}</h2>', unsafe_allow_html=True)
 
-    # --- 6-5. 섹션 루프 및 모든 편집 기능 (복구 완료) ---
+    # --- 6-6. 섹션 (블록) 루프 및 모든 편집 기능 ---
     sections = p.setdefault('sections', [])
     if edit_enabled and st.button("➕ 새로운 세로 섹션 뭉치 추가", key=f"add_sec_{shared_store['current_page']}"):
         sections.append({
@@ -366,31 +369,30 @@ def main_content_area(edit_enabled):
     for s_idx, sec in enumerate(sections):
         with st.container(border=True): 
             if edit_enabled:
-                sc1, sc2, sc3, sc4, sc5 = st.columns([2.5, 1, 1, 1.5, 0.5])
+                sc1, sc2, sc3, sc4, sc5 = st.columns([2.5, 0.8, 0.8, 1.2, 0.5])
                 sec['title'] = sc1.text_input("섹션 제목", sec.get('title', ''), key=f"st_{s_idx}")
-                sec['title_fs'] = sc2.number_input("제목 크기", 10, 80, int(sec.get('title_fs', 32)), key=f"stfs_{s_idx}")
-                sec['title_color'] = sc3.color_picker("제목 색상", sec.get('title_color', '#1a1c1e'), key=f"stc_{s_idx}")
-                sec['col_ratio'] = sc4.slider("좌/우 비율 조절", 1.0, 4.0, float(sec.get('col_ratio', 2.0)), 0.1, key=f"scr_{s_idx}")
+                sec['title_fs'] = sc2.number_input("크기", 10, 80, int(sec.get('title_fs', 32)), key=f"stfs_{s_idx}")
+                sec['title_color'] = sc3.color_picker("색상", sec.get('title_color', '#1a1c1e'), key=f"stc_{s_idx}")
+                sec['col_ratio'] = sc4.slider("좌/우 비율", 1.0, 4.0, float(sec.get('col_ratio', 2.0)), 0.1, key=f"scr_{s_idx}")
                 if sc5.button("🗑️", key=f"sdel_{s_idx}"): sections.pop(s_idx); st.rerun()
             
-            st.markdown(f"<h2 style='font-size:{sec.get('title_fs', 32)}px; color:{sec.get('title_color', '#1a1c1e')}; margin-top: 5px; margin-bottom: 20px; padding-bottom: 12px; border-bottom: 2px solid #f8f9fa;'>{sec.get('title')}</h2>", unsafe_allow_html=True)
+            st.markdown(f"<h3 style='font-size:{sec.get('title_fs', 32)}px; color:{sec.get('title_color', '#1a1c1e')}; margin-bottom: 20px; padding-bottom: 12px; border-bottom: 2px solid #f8f9fa;'>{sec.get('title')}</h3>", unsafe_allow_html=True)
 
             col_main, col_side = st.columns([sec.get('col_ratio', 2.0), 1], gap="medium")
             
             with col_main: # 좌측 영역: 그림 및 [줄 단위 본문 편집]
                 if edit_enabled:
-                    with st.expander("🖼️ 본문(좌측) 그림 및 스케일 관리"):
+                    with st.expander("🖼️ 이미지 관리"):
                         img_f = st.file_uploader(f"그림 업로드", type=['png', 'jpg'], key=f"simg_{s_idx}")
                         if img_f: sec['main_image'] = f"data:image/png;base64,{base64.b64encode(img_f.getvalue()).decode()}"
-                        sec['full_width'] = st.toggle("칼럼 너비 꽉 채우기", value=sec.get('full_width', True), key=f"fw_{s_idx}")
+                        sec['full_width'] = st.toggle("너비 꽉 채우기", value=sec.get('full_width', True), key=f"fw_{s_idx}")
                         if not sec['full_width']: sec['img_width'] = st.slider("수동 너비 조절", 100, 1200, int(sec.get('img_width', 750)), key=f"sw_{s_idx}")
                         if st.button("🗑️ 그림 삭제", key=f"simg_del_{s_idx}"): sec['main_image'] = None; st.rerun()
                 
                 if sec.get('main_image'): 
                     style = "width:100%;" if sec.get('full_width', True) else f"width:{sec.get('img_width', 750)}px; max-width:100%;"
-                    st.markdown(f'<div style="text-align:center;"><img src="{sec["main_image"]}" style="{style} border-radius:12px; margin-bottom:20px; box-shadow: 0 4px 12px rgba(0,0,0,0.05);" /></div>', unsafe_allow_html=True)
+                    st.markdown(f'<div style="text-align:center;"><img src="{sec["main_image"]}" style="{style} border-radius:12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05);" /></div>', unsafe_allow_html=True)
                 
-                # [복구] 본문 줄 단위 개별 편집 로직
                 sec.setdefault('lines', [])
                 if edit_enabled:
                     st.caption("📝 본문 문구 스타일 편집 (줄 단위)")
