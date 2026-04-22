@@ -97,9 +97,9 @@ shared_store = get_global_store()
 # ==========================================
 def get_sample_json_guide():
     return {
-        "title": "전체 보고서 공통 제목",    # [신규] 문서 전체 제목
-        "title_fs": 55,                     # [신규] 전체 제목 크기
-        "title_color": "#0f172a",           # [신규] 전체 제목 색상
+        "title": "전체 보고서 공통 제목",    # [추가] 리포트 전체 제목
+        "title_fs": 55,                     # [추가] 전체 제목 크기
+        "title_color": "#0f172a",           # [추가] 전체 제목 색상
         "pages": [{
             "tab": "샘플 페이지",
             "header": "여기에 페이지별 소제목 입력",
@@ -125,14 +125,13 @@ def create_empty_page():
 
 def adapt_json_format(raw_data):
     if isinstance(raw_data, dict) and "pages" in raw_data: 
-        # 기존 로드된 데이터에 제목 정보가 없는 경우 기본값 삽입
         if "title" not in raw_data:
-            raw_data.update({"title": "AI 기반 보고 간소화 플랫폼", "title_fs": 55, "title_color": "#0f172a"})
+            raw_data.update({"title": "AI 기반 보고 플랫폼", "title_fs": 55, "title_color": "#0f172a"})
         return raw_data
     return get_sample_json_guide()
 
 # ==========================================
-# 4. ID 식별 및 음성 시스템 (모든 정교한 로직 보존)
+# 4. ID 식별 및 음성 시스템 (UID persistence 및 Heartbeat 보존)
 # ==========================================
 if "uid" not in st.session_state:
     url_uid = st.query_params.get("uid")
@@ -179,7 +178,6 @@ def agora_voice_system(app_id, channel, user_label):
                 client.on("user-published", async (u, m) => {{ await client.subscribe(u, m); if(m === "audio") u.audioTrack.play(); }});
             }} catch (e) {{ 
                 console.error(e);
-                alert("마이크를 연결할 수 없습니다. 권한 승인 여부를 확인해주세요.");
             }}
         }}
         
@@ -310,55 +308,57 @@ def main_content_area(edit_enabled):
         return
 
     data = shared_store["report_data"]
+    cp_idx = shared_store["current_page"] # 현재 페이지 인덱스
     
-    # --- [핵심 추가] 6-3. 전체 문서 공통 제목 설정 및 렌더링 ---
+    # --- [신규 추가] 6-3. 전체 문서 공통 제목 설정 및 렌더링 ---
     if edit_enabled:
         with st.expander("👑 전체 문서 공통 제목 설정", expanded=True):
-            data['title'] = st.text_input("문서 전체 제목", data.get('title', '새로운 보고서'), key="doc_title_in")
+            data['title'] = st.text_input("문서 전체 제목", data.get('title', ''), key="global_title_input")
             dtc1, dtc2 = st.columns(2)
             data['title_fs'] = dtc1.slider("제목 글자 크기", 20, 120, int(data.get('title_fs', 55)))
             data['title_color'] = dtc2.color_picker("제목 색상", data.get('title_color', '#0f172a'))
 
-    # 최상단에 공통 제목 출력
+    # 모든 페이지 공통 제목 출력
     st.markdown(f'<h1 style="text-align:center; font-size:{data.get("title_fs", 55)}px; color:{data.get("title_color", "#0f172a")}; margin-bottom:10px;">{data.get("title", "")}</h1>', unsafe_allow_html=True)
     st.markdown("<hr style='margin-top:0; margin-bottom:40px; border:0; border-top:1px solid #eee;'>", unsafe_allow_html=True)
 
-    if shared_store["current_page"] >= len(data['pages']):
+    if cp_idx >= len(data['pages']):
         shared_store["current_page"] = max(0, len(data['pages']) - 1)
-    p = data['pages'][shared_store["current_page"]]
+        st.rerun()
+    p = data['pages'][cp_idx]
     
     # --- 6-4. 페이지 관리 및 탭 내비게이션 ---
     if edit_enabled:
         st.write("---")
         pc1, pc2 = st.columns([1, 5])
         if pc1.button("➕ 페이지 추가"):
-            data['pages'].insert(shared_store["current_page"] + 1, create_empty_page())
+            data['pages'].insert(cp_idx + 1, create_empty_page())
             shared_store["current_page"] += 1
             st.rerun()
         if pc2.button("🗑️ 페이지 삭제") and len(data['pages']) > 1:
-            data['pages'].pop(shared_store["current_page"])
-            shared_store["current_page"] = max(0, shared_store["current_page"] - 1)
+            data['pages'].pop(cp_idx)
+            shared_store["current_page"] = max(0, cp_idx - 1)
             st.rerun()
 
     if is_reporter:
         tabs = {i: f"P{i+1}. {pg.get('tab', '')}" for i, pg in enumerate(data['pages'])}
         shared_store["current_page"] = st.radio("📑 이동", list(tabs.keys()), index=shared_store["current_page"], format_func=lambda x: tabs[x], horizontal=True)
         if edit_enabled: 
-            p['tab'] = st.text_input("🔖 탭 이름 수정", p.get('tab', ''), key=f"t_ed_{shared_store['current_page']}")
+            p['tab'] = st.text_input("🔖 탭 이름 수정", p.get('tab', ''), key=f"tab_edit_{cp_idx}")
 
     # --- 6-5. 페이지별 소제목 설정 및 렌더링 ---
     if edit_enabled:
         with st.expander("📌 페이지별 소제목 디자인 설정"):
-            p['header'] = st.text_input("소제목 내용", p.get('header', ''), key=f"ph_{shared_store['current_page']}")
+            p['header'] = st.text_input("소제목 내용", p.get('header', ''), key=f"ph_input_{cp_idx}")
             hc1, hc2 = st.columns(2)
-            p['header_fs'] = hc1.slider("소제목 크기", 10, 80, int(p.get('header_fs', 35)))
-            p['header_color'] = hc2.color_picker("소제목 색상", p.get('header_color', '#475569'))
+            p['header_fs'] = hc1.slider("소제목 크기", 10, 150, int(p.get('header_fs', 35)), key=f"phfs_{cp_idx}")
+            p['header_color'] = hc2.color_picker("소제목 색상", p.get('header_color', '#475569'), key=f"phc_{cp_idx}")
 
     st.markdown(f'<h2 style="text-align:center; font-size:{p.get("header_fs", 35)}px; color:{p.get("header_color", "#475569")}; margin-bottom:30px;">{p.get("header", "")}</h2>', unsafe_allow_html=True)
 
-    # --- 6-6. 섹션 (블록) 루프 및 모든 편집 기능 ---
+    # --- 6-6. 섹션 (블록) 루프 및 모든 편집 기능 (Key Collision 해결 완료) ---
     sections = p.setdefault('sections', [])
-    if edit_enabled and st.button("➕ 새로운 세로 섹션 뭉치 추가", key=f"add_sec_{shared_store['current_page']}"):
+    if edit_enabled and st.button("➕ 새로운 세로 섹션 뭉치 추가", key=f"add_sec_btn_{cp_idx}"):
         sections.append({
             "title": "새 섹션", "title_fs": 32, "title_color": "#1a1c1e", "col_ratio": 2.0, 
             "lines": [{"text": "내용", "size": 22, "color": "#1e293b"}], 
@@ -370,11 +370,12 @@ def main_content_area(edit_enabled):
         with st.container(border=True): 
             if edit_enabled:
                 sc1, sc2, sc3, sc4, sc5 = st.columns([2.5, 0.8, 0.8, 1.2, 0.5])
-                sec['title'] = sc1.text_input("섹션 제목", sec.get('title', ''), key=f"st_{s_idx}")
-                sec['title_fs'] = sc2.number_input("크기", 10, 80, int(sec.get('title_fs', 32)), key=f"stfs_{s_idx}")
-                sec['title_color'] = sc3.color_picker("색상", sec.get('title_color', '#1a1c1e'), key=f"stc_{s_idx}")
-                sec['col_ratio'] = sc4.slider("좌/우 비율", 1.0, 4.0, float(sec.get('col_ratio', 2.0)), 0.1, key=f"scr_{s_idx}")
-                if sc5.button("🗑️", key=f"sdel_{s_idx}"): sections.pop(s_idx); st.rerun()
+                # [중요] 모든 위젯 키에 cp_idx(현재 페이지 번호)를 포함하여 데이터 섞임 방지
+                sec['title'] = sc1.text_input("섹션 제목", sec.get('title', ''), key=f"st_t_{cp_idx}_{s_idx}")
+                sec['title_fs'] = sc2.number_input("크기", 10, 80, int(sec.get('title_fs', 32)), key=f"st_fs_{cp_idx}_{s_idx}")
+                sec['title_color'] = sc3.color_picker("색상", sec.get('title_color', '#1a1c1e'), key=f"st_c_{cp_idx}_{s_idx}")
+                sec['col_ratio'] = sc4.slider("비율", 1.0, 4.0, float(sec.get('col_ratio', 2.0)), 0.1, key=f"st_r_{cp_idx}_{s_idx}")
+                if sc5.button("🗑️", key=f"st_del_{cp_idx}_{s_idx}"): sections.pop(s_idx); st.rerun()
             
             st.markdown(f"<h3 style='font-size:{sec.get('title_fs', 32)}px; color:{sec.get('title_color', '#1a1c1e')}; margin-bottom: 20px; padding-bottom: 12px; border-bottom: 2px solid #f8f9fa;'>{sec.get('title')}</h3>", unsafe_allow_html=True)
 
@@ -383,15 +384,15 @@ def main_content_area(edit_enabled):
             with col_main: # 좌측 영역: 그림 및 [줄 단위 본문 편집]
                 if edit_enabled:
                     with st.expander("🖼️ 이미지 관리"):
-                        img_f = st.file_uploader(f"그림 업로드", type=['png', 'jpg'], key=f"simg_{s_idx}")
+                        img_f = st.file_uploader(f"그림 업로드", type=['png', 'jpg'], key=f"simg_f_{cp_idx}_{s_idx}")
                         if img_f: sec['main_image'] = f"data:image/png;base64,{base64.b64encode(img_f.getvalue()).decode()}"
-                        sec['full_width'] = st.toggle("너비 꽉 채우기", value=sec.get('full_width', True), key=f"fw_{s_idx}")
-                        if not sec['full_width']: sec['img_width'] = st.slider("수동 너비 조절", 100, 1200, int(sec.get('img_width', 750)), key=f"sw_{s_idx}")
-                        if st.button("🗑️ 그림 삭제", key=f"simg_del_{s_idx}"): sec['main_image'] = None; st.rerun()
+                        sec['full_width'] = st.toggle("너비 꽉 채우기", value=sec.get('full_width', True), key=f"fw_{cp_idx}_{s_idx}")
+                        if not sec['full_width']: sec['img_width'] = st.slider("수동 너비 조절", 100, 1200, int(sec.get('img_width', 750)), key=f"sw_{cp_idx}_{s_idx}")
+                        if st.button("🗑️ 그림 삭제", key=f"simg_del_{cp_idx}_{s_idx}"): sec['main_image'] = None; st.rerun()
                 
                 if sec.get('main_image'): 
                     style = "width:100%;" if sec.get('full_width', True) else f"width:{sec.get('img_width', 750)}px; max-width:100%;"
-                    st.markdown(f'<div style="text-align:center;"><img src="{sec["main_image"]}" style="{style} border-radius:12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05);" /></div>', unsafe_allow_html=True)
+                    st.markdown(f'<div style="text-align:center;"><img src="{sec["main_image"]}" style="{style} border-radius:12px; margin-bottom:20px; box-shadow: 0 4px 12px rgba(0,0,0,0.05);" /></div>', unsafe_allow_html=True)
                 
                 sec.setdefault('lines', [])
                 if edit_enabled:
@@ -399,12 +400,12 @@ def main_content_area(edit_enabled):
                     new_lines = []
                     for l_idx, line in enumerate(sec['lines']):
                         lc1, lc2, lc3, lc4 = st.columns([5, 1.5, 1.5, 0.5])
-                        l_t = lc1.text_input(f"T", line['text'], key=f"lt_{s_idx}_{l_idx}", label_visibility="collapsed")
-                        l_s = lc2.number_input("S", 10, 100, int(line['size']), key=f"ls_{s_idx}_{l_idx}")
-                        l_c = lc3.color_picker("C", line['color'], key=f"lc_{s_idx}_{l_idx}")
-                        if not lc4.button("🗑️", key=f"ld_{s_idx}_{l_idx}"): new_lines.append({"text": l_t, "size": l_s, "color": l_c})
+                        l_t = lc1.text_input(f"T", line['text'], key=f"lt_t_{cp_idx}_{s_idx}_{l_idx}", label_visibility="collapsed")
+                        l_s = lc2.number_input("S", 10, 100, int(line['size']), key=f"lt_s_{cp_idx}_{s_idx}_{l_idx}")
+                        l_c = lc3.color_picker("C", line['color'], key=f"lt_c_{cp_idx}_{s_idx}_{l_idx}")
+                        if not lc4.button("🗑️", key=f"lt_del_{cp_idx}_{s_idx}_{l_idx}"): new_lines.append({"text": l_t, "size": l_s, "color": l_c})
                     sec['lines'] = new_lines
-                    if st.button("➕ 문구 줄 추가", key=f"la_{s_idx}"): sec['lines'].append({"text": "새로운 문구", "size": 22, "color": "#1e293b"}); st.rerun()
+                    if st.button("➕ 문구 줄 추가", key=f"lt_add_{cp_idx}_{s_idx}"): sec['lines'].append({"text": "새로운 문구", "size": 22, "color": "#1e293b"}); st.rerun()
                 else:
                     for line in sec.get('lines', []):
                         st.markdown(f'<p class="text-line" style="font-size:{line["size"]}px; color:{line["color"]}; font-weight:bold;">{line["text"]}</p>', unsafe_allow_html=True)
@@ -413,22 +414,22 @@ def main_content_area(edit_enabled):
                 sec.setdefault('side_items', [])
                 if edit_enabled:
                     sc1, sc2 = st.columns(2)
-                    if sc1.button("📊 지표 추가", key=f"am_{s_idx}"): sec['side_items'].append({"type":"metric", "label":"항목", "value":"0", "color":"#007bff", "label_fs": 14, "label_color": "#64748b", "value_fs": 28}); st.rerun()
-                    if sc2.button("🖼️ 그림 추가", key=f"ai_{s_idx}"): sec['side_items'].append({"type":"image", "src":None, "width":350}); st.rerun()
+                    if sc1.button("📊 지표 추가", key=f"si_add_m_{cp_idx}_{s_idx}"): sec['side_items'].append({"type":"metric", "label":"항목", "value":"0", "color":"#007bff", "label_fs": 14, "label_color": "#64748b", "value_fs": 28}); st.rerun()
+                    if sc2.button("🖼️ 그림 추가", key=f"si_add_i_{cp_idx}_{s_idx}"): sec['side_items'].append({"type":"image", "src":None, "width":350}); st.rerun()
                 
                 for i_idx, item in enumerate(sec['side_items']):
                     if edit_enabled:
                         with st.expander(f"⚙️ {item.get('label', '아이템')} 편집", expanded=True):
                             if item['type'] == "metric":
-                                item['label'] = st.text_input("라벨", item.get('label'), key=f"il_{s_idx}_{i_idx}")
-                                item['value'] = st.text_area("내용", item.get('value'), height=120, key=f"iv_{s_idx}_{i_idx}")
-                                ic3, ic4 = st.columns(2); item['label_fs'] = ic3.number_input("라벨크기", 10, 60, int(item.get('label_fs', 14)), key=f"ilfs_{s_idx}_{i_idx}"); item['label_color'] = ic4.color_picker("라벨색상", item.get('label_color', '#64748b'), key=f"ilc_{s_idx}_{i_idx}")
-                                ic5, ic6 = st.columns(2); item['value_fs'] = ic5.number_input("내용크기", 10, 100, int(item.get('value_fs', 28)), key=f"ivfs_{s_idx}_{i_idx}"); item['color'] = ic6.color_picker("내용색상", item.get('color', '#007bff'), key=f"ic_{s_idx}_{i_idx}")
+                                item['label'] = st.text_input("라벨", item.get('label'), key=f"si_l_{cp_idx}_{s_idx}_{i_idx}")
+                                item['value'] = st.text_area("내용", item.get('value'), height=120, key=f"si_v_{cp_idx}_{s_idx}_{i_idx}")
+                                ic3, ic4 = st.columns(2); item['label_fs'] = ic3.number_input("라벨크기", 10, 60, int(item.get('label_fs', 14)), key=f"si_lfs_{cp_idx}_{s_idx}_{i_idx}"); item['label_color'] = ic4.color_picker("라벨색상", item.get('label_color', '#64748b'), key=f"si_lc_{cp_idx}_{s_idx}_{i_idx}")
+                                ic5, ic6 = st.columns(2); item['value_fs'] = ic5.number_input("내용크기", 10, 100, int(item.get('value_fs', 28)), key=f"si_vfs_{cp_idx}_{s_idx}_{i_idx}"); item['color'] = ic6.color_picker("내용색상", item.get('color', '#007bff'), key=f"si_vc_{cp_idx}_{s_idx}_{i_idx}")
                             elif item['type'] == "image":
-                                siu = st.file_uploader("그림 업로드", key=f"siu_{s_idx}_{i_idx}")
+                                siu = st.file_uploader("그림 업로드", key=f"si_iu_{cp_idx}_{s_idx}_{i_idx}")
                                 if siu: item['src'] = f"data:image/png;base64,{base64.b64encode(siu.getvalue()).decode()}"
-                                item['width'] = st.slider("너비", 100, 500, int(item.get('width', 350)), key=f"siw_{s_idx}_{i_idx}")
-                            if st.button("🗑️ 삭제", key=f"sdel_{s_idx}_{i_idx}"): sec['side_items'].pop(i_idx); st.rerun()
+                                item['width'] = st.slider("너비", 100, 500, int(item.get('width', 350)), key=f"si_iw_{cp_idx}_{s_idx}_{i_idx}")
+                            if st.button("🗑️ 삭제", key=f"si_del_{cp_idx}_{s_idx}_{i_idx}"): sec['side_items'].pop(i_idx); st.rerun()
                     
                     if item['type'] == "metric":
                         fv = item.get('value', '').replace('\n', '<br>')
