@@ -442,7 +442,7 @@ with st.sidebar:
             ai_text_input = st.text_area("텍스트 데이터 입력", placeholder="회의록, 초안, 아이디어를 자유롭게 적어주세요.")
             ai_file_input = st.file_uploader("또는 문서 업로드", type=["txt", "csv", "md"])
             
-            if st.button("🚀 AI JSON 자동 생성", use_container_width=True):
+            if st.button("🚀 AI 보고서 생성", use_container_width=True):
                 if not ai_api_key:
                     st.error("API Key를 입력해주세요.")
                 else:
