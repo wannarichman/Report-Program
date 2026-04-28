@@ -730,8 +730,8 @@ with st.sidebar:
                 "텍스트 데이터 입력 (예: '5페이지로 안전 보고서 만들어줘. ...')"
             )
             ai_file_input = st.file_uploader(
-                "또는 문서 업로드 (PDF / TXT / CSV / MD)",
-                type=["pdf", "txt", "csv", "md"],
+                "또는 문서 업로드 (PDF / PPTX / DOCX / HWP / HWPX / TXT / CSV / MD)",
+                type=["pdf", "pptx", "ppt", "docx", "hwp", "hwpx", "txt", "csv", "md"],
             )
 
             if st.button("AI 보고서 생성", use_container_width=True):
