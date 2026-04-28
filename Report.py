@@ -229,7 +229,7 @@ def render_image_src(img_val):
     return val
 
 # ==========================================
-# [핵심] AI 텍스트 -> JSON 파싱 로직 (문법오류 완벽 차단)
+# [핵심] AI 텍스트 -> JSON 파싱 로직
 # ==========================================
 def generate_json_from_ai(api_key, context_text):
     try:
@@ -254,7 +254,6 @@ def generate_json_from_ai(api_key, context_text):
         """
         response = model.generate_content(system_prompt)
         
-        # 파이썬 구문오류 방지를 위해 싱글 쿼테이션 사용
         clean_text = response.text.strip()
         if clean_text.startswith('```json'): 
             clean_text = clean_text[7:]
@@ -397,15 +396,15 @@ with st.sidebar:
         st.divider()
         
         # --- AI 생성 기능 ---
-with st.expander("✨ AI 자동 보고서 생성 (Text/File)", expanded=False):
-            # 화면 입력창을 없애고, Streamlit Secrets에서 몰래 키를 꺼내옵니다.
+        with st.expander("✨ AI 자동 보고서 생성 (Text/File)", expanded=False):
             try:
                 ai_api_key = st.secrets["GEMINI_API_KEY"]
             except Exception:
-                ai_api_key = "" # 키를 못 찾으면 일단 빈 값 처리 (에러 방지)
+                ai_api_key = ""
                 st.warning("⚠️ 서버에 GEMINI_API_KEY가 설정되지 않았습니다.")
 
             ai_text_input = st.text_area("텍스트 데이터 입력", placeholder="회의록, 초안, 아이디어를 자유롭게 적어주세요.")
+            ai_file_input = st.file_uploader("또는 문서 업로드", type=["txt", "csv", "md"])
             
             if st.button("🚀 AI JSON 자동 생성", use_container_width=True):
                 if not ai_api_key:
