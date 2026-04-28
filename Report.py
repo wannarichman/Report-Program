@@ -1,6 +1,6 @@
 import streamlit as st
 import streamlit.components.v1 as components
-import pandas as pd  # 차트 데이터를 그리기 위해 추가됨
+import pandas as pd
 import json
 import time
 import base64
@@ -146,7 +146,6 @@ def get_sample_json_guide():
                         "title_fs": 32,
                         "title_color": "#1a1c1e",
                         "col_ratio": 1.5,
-                        # [추가] 리얼 샘플 이미지 및 차트 데이터 반영
                         "main_image": "https://picsum.photos/seed/business/800/400",
                         "full_width": True,
                         "image_query": "",
@@ -562,7 +561,7 @@ def main_content_area(edit_enabled):
                     )
                 
                 # --------------------------
-                # [추가] 좌측 메인: 2. 차트 렌더링
+                # [추가/수정] 좌측 메인: 2. 차트 렌더링 (들여쓰기 버그 해결)
                 # --------------------------
                 if edit_enabled:
                     with st.expander("📈 차트/그래프 관리"):
@@ -575,12 +574,11 @@ def main_content_area(edit_enabled):
                             "차트 데이터 입력 (항목, 숫자 형태 / 줄바꿈으로 구분)", 
                             value=sec.get("chart_data", ""), 
                             key=f"ch_d*{cp_idx}*{s_idx}",
-                            help="예시:\\n1분기, 50\\n2분기, 80"
+                            help="예시:\n1분기, 50\n2분기, 80"
                         )
                 
-if sec.get("chart_data"):
+                if sec.get("chart_data"):
                     try:
-                        # 실제 엔터(줄바꿈)와 텍스트형 '\n'을 모두 인식하도록 전처리
                         raw_chart_data = sec["chart_data"].replace('\\n', '\n')
                         lines_data = [line.strip() for line in raw_chart_data.split('\n') if ',' in line]
                         
@@ -588,7 +586,6 @@ if sec.get("chart_data"):
                             data_dict = {}
                             for line in lines_data:
                                 k, v = line.split(',', 1)
-                                # 천 단위 콤마나 공백이 있어도 숫자로 변환할 수 있도록 처리
                                 clean_val = v.replace(',', '').strip()
                                 data_dict[k.strip()] = float(clean_val)
                             
