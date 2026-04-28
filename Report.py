@@ -231,41 +231,76 @@ def render_image_src(img_val):
 # ==========================================
 # [핵심] AI 텍스트 -> JSON 파싱 로직 (모든 환경 호환 gemini-pro 적용)
 # ==========================================
+# ==========================================
+# [핵심] AI 텍스트 -> JSON 파싱 로직 (최신 Gemini 모델 적용)
+# ==========================================
 def generate_json_from_ai(api_key, context_text):
     try:
         genai.configure(api_key=api_key)
-        # 어떤 키/지역에서도 100% 작동하는 가장 안정적인 모델로 지정
-        model = genai.GenerativeModel('gemini-pro')
-        
+
+        # ✅ 최신 SDK에서 지원하는 안정 모델로 교체
+        # (gemini-pro 는 v1beta 에서 제거되어 404 발생)
+        # 우선순위대로 fallback 시도
+        candidate_models = [
+            "gemini-2.0-flash",
+            "gemini-1.5-flash",
+            "gemini-1.5-flash-latest",
+            "gemini-1.5-pro-latest",
+        ]
+
         system_prompt = f"""
-        당신은 뛰어난 비즈니스 컨설턴트이자 데이터 구조화 전문가입니다.
-        사용자가 제공한 [입력 데이터]를 분석하여, 아래 [표준 JSON 양식] 구조에 맞는 완벽한 JSON 데이터를 생성하십시오.
-        
-        [표준 JSON 양식 참조]
-        {json.dumps(get_sample_json_guide(), ensure_ascii=False)}
-        
-        지시사항:
-        1. P1(요약), P2(상세), P3(액션/리스크) 3페이지 구조를 유지하세요.
-        2. 사용자의 데이터를 기반으로 각 섹션의 lines, side_items(metric), chart_data를 알아서 작성하세요.
-        3. 차트가 필요한 수치 데이터가 있다면 P2의 chart_data 필드에 "항목, 수치\\n항목, 수치" 형태로 작성하세요.
-        4. 마크다운 코드블록 없이 오직 파싱 가능한 순수 JSON 문자열만 출력하세요.
-        
-        [입력 데이터]
-        {context_text}
-        """
-        response = model.generate_content(system_prompt)
-        
-        clean_text = response.text.strip()
-        if clean_text.startswith('```json'): 
-            clean_text = clean_text[7:]
-        if clean_text.startswith('```'): 
-            clean_text = clean_text[3:]
-        if clean_text.endswith('```'): 
+당신은 뛰어난 비즈니스 컨설턴트이자 데이터 구조화 전문가입니다.
+사용자가 제공한 [입력 데이터]를 분석하여, 아래 [표준 JSON 양식] 구조에 맞는 완벽한 JSON 데이터를 생성하십시오.
+
+[표준 JSON 양식 참조]
+{json.dumps(get_sample_json_guide(), ensure_ascii=False)}
+
+지시사항:
+1. P1(요약), P2(상세), P3(액션/리스크) 3페이지 구조를 유지하세요.
+2. 사용자의 데이터를 기반으로 각 섹션의 lines, side_items(metric), chart_data를 알아서 작성하세요.
+3. 차트가 필요한 수치 데이터가 있다면 P2의 chart_data 필드에 "항목, 수치\\n항목, 수치" 형태로 작성하세요.
+4. 마크다운 코드블록 없이 오직 파싱 가능한 순수 JSON 문자열만 출력하세요.
+
+[입력 데이터]
+{context_text}
+"""
+
+        # JSON 출력 강제 (지원되는 모델에서 더 안정적)
+        generation_config = {
+            "response_mime_type": "application/json",
+            "temperature": 0.4,
+        }
+
+        last_error = None
+        response = None
+        for model_name in candidate_models:
+            try:
+                model = genai.GenerativeModel(
+                    model_name,
+                    generation_config=generation_config,
+                )
+                response = model.generate_content(system_prompt)
+                break  # 성공하면 루프 탈출
+            except Exception as e:
+                last_error = e
+                continue
+
+        if response is None:
+            return {"error": f"사용 가능한 모델이 없습니다. 마지막 에러: {last_error}"}
+
+        clean_text = (response.text or "").strip()
+
+        # ```json ... ``` 코드블록이 섞여 들어오는 경우 안전 제거
+        if clean_text.startswith("```"):
+            # 첫 줄(```json 또는 ```) 제거
+            clean_text = clean_text.split("\n", 1)[1] if "\n" in clean_text else clean_text[3:]
+        if clean_text.endswith("```"):
             clean_text = clean_text[:-3]
-        
         clean_text = clean_text.strip()
+
         parsed_json = json.loads(clean_text)
         return parsed_json
+
     except Exception as e:
         return {"error": str(e)}
 
