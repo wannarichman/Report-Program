@@ -578,14 +578,19 @@ def main_content_area(edit_enabled):
                             help="예시:\\n1분기, 50\\n2분기, 80"
                         )
                 
-                if sec.get("chart_data"):
+if sec.get("chart_data"):
                     try:
-                        lines_data = [line for line in sec["chart_data"].strip().split('\\n') if ',' in line]
+                        # 실제 엔터(줄바꿈)와 텍스트형 '\n'을 모두 인식하도록 전처리
+                        raw_chart_data = sec["chart_data"].replace('\\n', '\n')
+                        lines_data = [line.strip() for line in raw_chart_data.split('\n') if ',' in line]
+                        
                         if lines_data:
                             data_dict = {}
                             for line in lines_data:
                                 k, v = line.split(',', 1)
-                                data_dict[k.strip()] = float(v.strip())
+                                # 천 단위 콤마나 공백이 있어도 숫자로 변환할 수 있도록 처리
+                                clean_val = v.replace(',', '').strip()
+                                data_dict[k.strip()] = float(clean_val)
                             
                             if data_dict:
                                 df = pd.DataFrame(list(data_dict.values()), index=list(data_dict.keys()), columns=["수치"])
@@ -598,8 +603,10 @@ def main_content_area(edit_enabled):
                                 else:
                                     st.bar_chart(df, use_container_width=True)
                                 st.markdown("</div>", unsafe_allow_html=True)
-                    except Exception:
-                        st.warning("⚠️ 차트 데이터를 올바른 형식(항목, 숫자)으로 입력해주세요.")
+                        else:
+                            st.warning("⚠️ 차트 데이터가 없거나 쉼표(,)로 구분되지 않았습니다.")
+                    except Exception as e:
+                        st.warning("⚠️ 차트 데이터를 올바른 형식(항목, 숫자)으로 입력해주세요. (예: 1분기, 50)")
 
                 # --------------------------
                 # 좌측 메인: 3. 본문 줄 편집/렌더
