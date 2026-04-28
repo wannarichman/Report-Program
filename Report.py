@@ -229,13 +229,13 @@ def render_image_src(img_val):
     return val
 
 # ==========================================
-# [핵심] AI 텍스트 -> JSON 파싱 로직 (모델명 수정)
+# [핵심] AI 텍스트 -> JSON 파싱 로직 (모든 환경에서 호환되는 Flash 모델 적용)
 # ==========================================
 def generate_json_from_ai(api_key, context_text):
     try:
         genai.configure(api_key=api_key)
-        # [모델명 수정] gemini-1.5-pro 로 변경하여 문서 분석 성능 극대화 및 404 오류 해결
-        model = genai.GenerativeModel('gemini-1.5-pro')
+        # 안정적이고 속도가 빠른 기본 flash 모델로 교체
+        model = genai.GenerativeModel('gemini-1.5-flash')
         
         system_prompt = f"""
         당신은 뛰어난 비즈니스 컨설턴트이자 데이터 구조화 전문가입니다.
@@ -632,7 +632,7 @@ def main_content_area(edit_enabled):
                     )
                 
                 # -----------------------------------
-                # 2. 차트 관리 및 렌더링 (안정적 파싱 적용)
+                # 2. 차트 관리 및 렌더링
                 # -----------------------------------
                 if edit_enabled:
                     with st.expander("📈 차트/그래프 관리"):
