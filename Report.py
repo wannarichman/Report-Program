@@ -5,6 +5,7 @@ import json
 import time
 import base64
 import os
+import copy
 import urllib.parse
 import requests
 import google.generativeai as genai
@@ -15,26 +16,26 @@ from io import BytesIO
 
 try:
     from pypdf import PdfReader
-    _HAS_PYPDF = True
+    HAS_PYPDF = True
 except Exception:
-    _HAS_PYPDF = False
+    HAS_PYPDF = False
 
 MAX_DOC_CHARS = 30000  # 무료 모델 토큰 보호용
+_FENCE = "`" * 3       # 트리플 백틱 상수 (코드펜스 비교용)
 
 
+# ==========================================
+# 0. 유틸: 업로드 파싱 / 페이지 수 추출 / 코드펜스 제거
+# ==========================================
 def extract_text_from_upload(uploaded_file):
-    """
-    Streamlit UploadedFile -> 평문 텍스트.
-    지원: txt, md, csv, pdf. 그 외는 utf-8 디코드 시도.
-    """
+    """Streamlit UploadedFile -> 평문 텍스트. 지원: txt, md, csv, pdf."""
     if uploaded_file is None:
         return ""
     name = (uploaded_file.name or "").lower()
     raw = uploaded_file.getvalue()
 
-    # 1) PDF
     if name.endswith(".pdf"):
-        if not _HAS_PYPDF:
+        if not HAS_PYPDF:
             return "[오류] pypdf가 설치되지 않았습니다. requirements.txt에 pypdf>=4.0.0 추가 필요."
         try:
             reader = PdfReader(BytesIO(raw))
@@ -48,12 +49,11 @@ def extract_text_from_upload(uploaded_file):
                     pages_text.append(f"--- [PDF p.{i+1}] ---\n{t.strip()}")
             full = "\n\n".join(pages_text).strip()
             if not full:
-                return "[알림] PDF에서 텍스트를 추출하지 못했습니다(스캔본/이미지 PDF로 추정). OCR 처리가 필요합니다."
+                return "[알림] PDF에서 텍스트를 추출하지 못했습니다(스캔본/이미지 PDF로 추정)."
             return full[:MAX_DOC_CHARS]
         except Exception as e:
             return f"[PDF 파싱 오류] {e}"
 
-    # 2) CSV/TXT/MD/기타 텍스트
     try:
         text = raw.decode("utf-8", errors="ignore")
     except Exception:
@@ -62,9 +62,7 @@ def extract_text_from_upload(uploaded_file):
 
 
 def extract_requested_page_count(text):
-    """
-    사용자 입력에서 'N페이지', 'N장', 'N pages' 패턴을 찾아 정수 반환. 없으면 None.
-    """
+    """사용자 입력에서 'N페이지', 'N장', 'N pages' 패턴을 찾아 정수 반환. 없으면 None."""
     if not text:
         return None
     patterns = [
@@ -78,11 +76,22 @@ def extract_requested_page_count(text):
         if m:
             try:
                 n = int(m.group(1))
-                if 1 <= n <= 12:  # 합리적 범위
+                if 1 <= n <= 12:
                     return n
             except Exception:
                 continue
     return None
+
+
+def _strip_code_fence(text):
+    s = (text or "").strip()
+    if s.startswith(_FENCE):
+        nl = s.find("\n")
+        s = s[nl + 1:] if nl != -1 else s[3:]
+    if s.endswith(_FENCE):
+        s = s[:-3]
+    return s.strip()
+
 
 # ==========================================
 # 1. 페이지 설정 및 CSS
@@ -109,6 +118,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+
 # ==========================================
 # 2. 전역 저장소
 # ==========================================
@@ -122,8 +132,9 @@ def get_global_store():
 
 shared_store = get_global_store()
 
+
 # ==========================================
-# 3. 표준 양식 및 유틸리티
+# 3. 표준 양식
 # ==========================================
 def get_sample_json_guide():
     return {
@@ -151,21 +162,13 @@ def get_sample_json_guide():
         ],
     }
 
-def create_empty_page():
-    return get_sample_json_guide()["pages"][0]
 
-def adapt_json_format(raw_data):
-    if isinstance(raw_data, dict) and "pages" in raw_data:
-        if "title" not in raw_data:
-            raw_data.update({"title": "AI 기반 보고 플랫폼", "title_fs": 55, "title_color": "#0f172a"})
-        if "title_fs" not in raw_data:
-            raw_data["title_fs"] = 55
-        if "title_color" not in raw_data:
-            raw_data["title_color"] = "#0f172a"
-        return raw_data
-    return get_sample_json_guide()
+def create_empty_page():
+    return copy.deepcopy(get_sample_json_guide()["pages"][0])
+
+
 # ==========================================
-# 3-1. JSON 자동 보정 (스타일 기본값 채움 + 구조 강제)
+# 3-1. JSON 자동 보정
 # ==========================================
 DEFAULT_LINE = {"text": "", "size": 22, "color": "#1e293b"}
 DEFAULT_METRIC = {
@@ -173,6 +176,7 @@ DEFAULT_METRIC = {
     "color": "#007bff", "label_fs": 14, "label_color": "#64748b", "value_fs": 28,
 }
 DEFAULT_IMAGE_ITEM = {"type": "image", "src": None, "width": 350, "image_query": ""}
+
 
 def _normalize_section(sec):
     sec.setdefault("title", "섹션")
@@ -184,7 +188,7 @@ def _normalize_section(sec):
     sec.setdefault("image_query", "")
     sec.setdefault("chart_type", "Bar")
     sec.setdefault("chart_data", "")
-    # lines
+
     raw_lines = sec.get("lines") or []
     fixed_lines = []
     for ln in raw_lines:
@@ -195,7 +199,7 @@ def _normalize_section(sec):
             base.update({k: v for k, v in ln.items() if v is not None})
             fixed_lines.append(base)
     sec["lines"] = fixed_lines
-    # side_items
+
     raw_items = sec.get("side_items") or []
     fixed_items = []
     for it in raw_items:
@@ -215,7 +219,6 @@ def _normalize_section(sec):
 
 
 def adapt_json_format(raw_data):
-    # AI 가 완전히 다른 구조를 넘기면 샘플로 fallback
     if not isinstance(raw_data, dict) or "pages" not in raw_data or not isinstance(raw_data["pages"], list):
         return get_sample_json_guide()
     raw_data.setdefault("title", "AI 자동 생성 보고서")
@@ -231,7 +234,6 @@ def adapt_json_format(raw_data):
         pg.setdefault("header_color", "#475569")
         secs = pg.get("sections") or []
         pg["sections"] = [_normalize_section(s) for s in secs if isinstance(s, dict)]
-        # 섹션이 하나도 없으면 빈 섹션 1개라도 넣어주기
         if not pg["sections"]:
             pg["sections"] = [_normalize_section({"title": pg["header"] or pg["tab"], "lines": []})]
         fixed_pages.append(pg)
@@ -242,23 +244,94 @@ def adapt_json_format(raw_data):
 
 
 # ==========================================
-# 3-2. 코드 펜스 제거 (안전한 버전)
+# 4. 외부 정보 수집 (네이버 검색)
 # ==========================================
-def _strip_code_fence(text):
-    s = (text or "").strip()
-    if s.startswith("```"):
-        # 맨 앞 ```lang 제거
-        nl = s.find("\n")
-        s = s[nl + 1:] if nl != -1 else s[3:]
-    if s.endswith("```"):
-        s = s[:-3]
-    return s.strip()
+def naver_search_text(query, max_results=5):
+    try:
+        cid = st.secrets.get("NAVER_CLIENT_ID", "")
+        csec = st.secrets.get("NAVER_CLIENT_SECRET", "")
+        if not cid or not csec:
+            return ""
+        headers = {"X-Naver-Client-Id": cid, "X-Naver-Client-Secret": csec}
+        snippets = []
+        for endpoint in ["news.json", "encyc.json", "webkr.json"]:
+            try:
+                r = requests.get(
+                    "https://openapi.naver.com/v1/search/" + endpoint,
+                    params={"query": query, "display": max_results, "sort": "sim"},
+                    headers=headers, timeout=5,
+                )
+                if r.status_code == 200:
+                    for item in r.json().get("items", []):
+                        title = item.get("title", "").replace("<b>", "").replace("</b>", "")
+                        desc = item.get("description", "").replace("<b>", "").replace("</b>", "")
+                        link = item.get("link", "")
+                        snippets.append(f"- [{title}] {desc} (출처: {link})")
+            except Exception:
+                continue
+        return "\n".join(snippets[:15])
+    except Exception:
+        return ""
+
+
+def naver_search_image(query):
+    try:
+        cid = st.secrets.get("NAVER_CLIENT_ID", "")
+        csec = st.secrets.get("NAVER_CLIENT_SECRET", "")
+        if not cid or not csec:
+            return ""
+        r = requests.get(
+            "https://openapi.naver.com/v1/search/image",
+            params={"query": query, "display": 5, "sort": "sim", "filter": "large"},
+            headers={"X-Naver-Client-Id": cid, "X-Naver-Client-Secret": csec},
+            timeout=5,
+        )
+        if r.status_code == 200:
+            items = r.json().get("items", [])
+            if items:
+                return items[0].get("link", "")
+        return ""
+    except Exception:
+        return ""
+
+
+def get_auto_image_url(query, w=1600, h=900):
+    if not isinstance(query, str):
+        return ""
+    q = query.strip()
+    if not q:
+        return ""
+    naver_url = naver_search_image(q)
+    if naver_url:
+        return naver_url
+    tags = ",".join([urllib.parse.quote(t.strip()) for t in q.split(",") if t.strip()])
+    lock = abs(hash(q)) % 100000
+    return f"https://loremflickr.com/{w}/{h}/{tags}?lock={lock}"
+
+
+def render_image_src(img_val):
+    if not img_val or not isinstance(img_val, str):
+        return ""
+    val = img_val.strip()
+    if not val:
+        return ""
+    if val.startswith("http://") or val.startswith("https://") or val.startswith("data:image"):
+        return val
+    if os.path.isfile(val):
+        try:
+            with open(val, "rb") as f:
+                ext = val.split(".")[-1].lower()
+                mime = "image/jpeg" if ext in ["jpg", "jpeg"] else f"image/{ext}"
+                return f"data:{mime};base64,{base64.b64encode(f.read()).decode()}"
+        except Exception:
+            return val
+    return val
 
 
 # ==========================================
-# 3-3. AI 프롬프트 강화
+# 5. AI 텍스트 -> JSON
 # ==========================================
-def generate_json_from_ai(api_key, context_text):
+def generate_json_from_ai(api_key, context_text, requested_pages=None):
     try:
         genai.configure(api_key=api_key)
         try:
@@ -304,137 +377,44 @@ def generate_json_from_ai(api_key, context_text):
         if not web_context:
             web_context = "(외부 검색 결과 없음 — 입력 데이터 기반으로만 생성)"
 
-        # ----- 1) 스키마: 값 없이 '키 설명'만 -----
-        schema_doc = """
-{
-  "title": "보고서 전체 제목 (한글, 30자 이내)",
-  "title_fs": 55,
-  "title_color": "#0f172a",
-  "pages": [
-    {
-      "tab": "탭 이름 (예: 요약 / 상세 / 액션)",
-      "header": "페이지 한 줄 소제목",
-      "header_fs": 35,
-      "header_color": "#475569",
-      "sections": [
-        {
-          "title": "섹션 제목",
-          "title_fs": 32,
-          "title_color": "#1a1c1e",
-          "col_ratio": 1.5,
-          "main_image": null,
-          "full_width": true,
-          "image_query": "영어 1~3단어 검색어 (예: 'construction site, crane'). 다만 한국 특수 상황이면 빈 문자열",
-          "chart_type": "Bar | Line | Area 중 하나",
-          "chart_data": "실제 수치 있을 때만 '항목, 수치\\n항목, 수치' 형식. 없으면 빈 문자열",
-          "lines": [
-            { "text": "본문 불렷 1줄 (10~80자, 입력 데이터 기반 재작성)", "size": 22, "color": "#1e293b" }
-          ],
-          "side_items": [
-            { "type": "metric", "label": "지표명", "value": "값 또는 여러줄은 \\n으로",
-              "color": "#007bff", "label_fs": 14, "label_color": "#64748b", "value_fs": 28 }
-          ]
-        }
-      ]
-    }
-  ]
-}
-""".strip()
+        page_count_directive = (
+            f"\n[페이지 수 제약]\n- pages 배열은 정확히 {requested_pages}개로 만들 것.\n"
+            if requested_pages else ""
+        )
 
-        # ----- 2) Few-shot 예제 (입력 → 구조 전환) -----
-        few_shot = """
-[예시 입력]
-이번 주 현장 안전교육 100% 이수. 고소작업 단속도 높이고 있으며, 다음 주까지 타워크레인 반입 일정.
+        schema_doc = json.dumps(get_sample_json_guide(), ensure_ascii=False, indent=2)
 
-[예시 출력 (포맷만 참고, 내용은 입력에 따라 다르게)]
-{
-  "title": "주간 안전/공정 보고",
-  "title_fs": 55,
-  "title_color": "#0f172a",
-  "pages": [
-    {
-      "tab": "요약", "header": "금주 핵심 요약",
-      "header_fs": 35, "header_color": "#475569",
-      "sections": [
-        {
-          "title": "금주 핵심 성과",
-          "title_fs": 32, "title_color": "#1a1c1e", "col_ratio": 1.5,
-          "main_image": null, "full_width": true,
-          "image_query": "safety training, helmet",
-          "chart_type": "Bar", "chart_data": "",
-          "lines": [
-            { "text": "• 현장 안전교육 이수율 100% 달성", "size": 24, "color": "#1e293b" },
-            { "text": "• 고소작업 단속도 상향으로 잠재 리스크 감소", "size": 22, "color": "#1e293b" }
-          ],
-          "side_items": [
-            { "type": "metric", "label": "교육 이수율", "value": "100%",
-              "color": "#16a34a", "label_fs": 14, "label_color": "#64748b", "value_fs": 34 }
-          ]
-        }
-      ]
-    },
-    {
-      "tab": "일정", "header": "다음 주 주요 일정",
-      "header_fs": 35, "header_color": "#475569",
-      "sections": [
-        {
-          "title": "일정 요약",
-          "title_fs": 32, "title_color": "#1a1c1e", "col_ratio": 1.5,
-          "main_image": null, "full_width": true, "image_query": "construction site, crane",
-          "chart_type": "Bar", "chart_data": "",
-          "lines": [
-            { "text": "1) 타워크레인 반입 예정", "size": 22, "color": "#1e293b" }
-          ],
-          "side_items": [
-            { "type": "metric", "label": "핵심 일정", "value": "D-7: 타워크레인 반입",
-              "color": "#0ea5e9", "label_fs": 14, "label_color": "#64748b", "value_fs": 22 }
-          ]
-        }
-      ]
-    }
-  ]
-}
-""".strip()
-
-        system_prompt = f"""당신은 포스코이앤씨에서 쓰이는 **주간/프로젝트 보고서 JSON 생성기** 입니다.
-반드시 아래 규칙을 따라 입력 데이터를 보고서 JSON으로 구조화하세요.
-
-[출력 형식]
-- **순수 JSON 하나만 출력** (마크다운/코드펜스 절대 금지).
-- 최상위 키: title, title_fs, title_color, pages.
-- pages는 최소 2개, 최대 5개. 각 페이지는 sections 최소 1개.
-- 각 섹션은 lines 최소 2개, side_items 최소 1개 포함.
-- 아래 스키마 키는 절대 생략 금지 (스타일 숨자 계속 유지).
+        system_prompt = f"""당신은 포스코이앤씨에서 쓰이는 주간/프로젝트 보고서 JSON 생성기입니다.
+입력 데이터를 분석하여 보고서용 JSON을 생성하세요.
 
 [현재 시점]
-- 오늘: {today_str} / {year_str}년 {quarter}분기. 과거 연도(2024, 2025년)를 '현재'로 표현 금지.
+- 오늘: {today_str}
+- 연도: {year_str}년 / 분기: {year_str}년 {quarter}분기
+- 과거 연도(2024, 2025년)를 "현재"로 표현 금지.
 
-[스키마 골격 (값은 설명, 실제 값은 입력 데이터에서 도출)]
+[출력 형식]
+- 순수 JSON 하나만 출력 (마크다운/코드펜스 절대 금지).
+- 최상위 키: title, title_fs, title_color, pages.
+- 각 페이지는 sections 최소 1개. 각 섹션은 lines 최소 2개, side_items 최소 1개.
+{page_count_directive}
+[JSON 스키마 - 필드 이름만 참고]
 {schema_doc}
 
-[Few-shot 예시 - 참고용, 그대로 복사 금지]
-{few_shot}
-
-[내용 규칙 - 중요]
-1. **표준양식 그대로 복사 금지**: "금주 핵심 성과 1", "할 일" 같은 플레이스홀더 문구 그대로 돌려주면 안 됨. 반드시 입력 데이터에서 재작성.
-2. **입력 데이터에서 최대한 많은 정보를 끈어냄**: 3줄을 주면 5~10줄의 의미있는 하위 항목으로 재구조화하세요(단, 수치/고유명사는 만들지 않음).
-3. **환각 방지**: 팀명/부서명/인물명/수치/날짜는 입력에 있는 것만 사용. 없으면 "관련 부서", "담당자" 등 일반적 표현.
-4. **chart_data**: 입력에 수치가 명확히 있을 때만 "항목, 수치\\n..." 형식. 없으면 고수 "". 임의 수치 생성 금지.
-5. **image_query**: 영어 1~3단어(한글 금지). "report", "summary", "data" 같은 추상어 금지. 적절한 단서가 없으면 "".
-6. **탭 분류는 입력의 내용에 맞게**: 요약/상세/액션이 기본이지만 입력이 프로젝트라면 프로젝트 계획/일정/이슈 등으로 재구성.
-
-[외부 검색 컨텍스트 - 참고용, 장단점/트렌드 파악에 활용]
+[외부 검색 컨텍스트]
 {web_context}
+
+[절대 규칙]
+1. 환각 금지: 팀명/부서명/인물/프로젝트명/회사명/수치/날짜는 입력 데이터 또는 검색 컨텍스트에 명시된 것만 사용.
+2. 정보가 부족하면 비우거나("") 일반적 표현("관련 부서", "담당자") 사용.
+3. chart_data는 실제 수치 있을 때만 "항목, 수치\\n항목, 수치" 형태. 없으면 "".
+4. image_query는 영어 1~3단어 (한글 금지). 추상어("report", "summary", "data") 금지. 단서 없으면 "".
+5. 표준양식의 플레이스홀더 문구를 그대로 복사 금지. 입력 데이터 기반으로 재작성.
 
 [입력 데이터]
 {context_text}
-
-[다시 강조]
-- JSON 만 출력. 설명, 머릿말, 코드펜스 금지.
-- 모든 sections에 lines/side_items 다 쓰세요(빈 배열 금지).
 """
 
-        generation_config = {"response_mime_type": "application/json", "temperature": 0.55}
+        generation_config = {"response_mime_type": "application/json", "temperature": 0.5}
         tried = []
         candidates = [chosen_model] + [n for n in available if n != chosen_model]
         response = None
@@ -453,10 +433,8 @@ def generate_json_from_ai(api_key, context_text):
         try:
             parsed = json.loads(clean_text)
         except Exception as e:
-            # 디버깅용 원문 일부 동봉
             return {"error": f"JSON 파싱 실패: {e}\n동봉(앞 500자): {clean_text[:500]}"}
 
-        # 테스트: 구조가 테텍한지 계산
         n_pages = len(parsed.get("pages", []))
         n_lines_total = sum(
             len(s.get("lines", []))
@@ -466,196 +444,20 @@ def generate_json_from_ai(api_key, context_text):
         if n_pages == 0 or n_lines_total == 0:
             return {"error": "모델이 빈 보고서를 돌려주었습니다. 입력을 더 자세히 적어주세요."}
         return parsed
-    except Exception as e:
-        return {"error": str(e)}
-        
-# ==========================================
-# 외부 정보 수집 (네이버 검색 API)
-# ==========================================
-def naver_search_text(query, max_results=5):
-    try:
-        cid = st.secrets.get("NAVER_CLIENT_ID", "")
-        csec = st.secrets.get("NAVER_CLIENT_SECRET", "")
-        if not cid or not csec:
-            return ""
-        headers = {"X-Naver-Client-Id": cid, "X-Naver-Client-Secret": csec}
-        snippets = []
-        for endpoint in ["news.json", "encyc.json", "webkr.json"]:
-            try:
-                r = requests.get("https://openapi.naver.com/v1/search/" + endpoint,
-                                 params={"query": query, "display": max_results, "sort": "sim"},
-                                 headers=headers, timeout=5)
-                if r.status_code == 200:
-                    for item in r.json().get("items", []):
-                        title = item.get("title", "").replace("<b>", "").replace("</b>", "")
-                        desc = item.get("description", "").replace("<b>", "").replace("</b>", "")
-                        link = item.get("link", "")
-                        snippets.append(f"- [{title}] {desc} (출처: {link})")
-            except Exception:
-                continue
-        return "\n".join(snippets[:15])
-    except Exception:
-        return ""
 
-def naver_search_image(query):
-    try:
-        cid = st.secrets.get("NAVER_CLIENT_ID", "")
-        csec = st.secrets.get("NAVER_CLIENT_SECRET", "")
-        if not cid or not csec:
-            return ""
-        r = requests.get("https://openapi.naver.com/v1/search/image",
-                         params={"query": query, "display": 5, "sort": "sim", "filter": "large"},
-                         headers={"X-Naver-Client-Id": cid, "X-Naver-Client-Secret": csec},
-                         timeout=5)
-        if r.status_code == 200:
-            items = r.json().get("items", [])
-            if items:
-                return items[0].get("link", "")
-        return ""
-    except Exception:
-        return ""
-
-def get_auto_image_url(query, w=1600, h=900):
-    if not isinstance(query, str):
-        return ""
-    q = query.strip()
-    if not q:
-        return ""
-    naver_url = naver_search_image(q)
-    if naver_url:
-        return naver_url
-    tags = ",".join([urllib.parse.quote(t.strip()) for t in q.split(",") if t.strip()])
-    lock = abs(hash(q)) % 100000
-    return f"https://loremflickr.com/{w}/{h}/{tags}?lock={lock}"
-
-def render_image_src(img_val):
-    if not img_val or not isinstance(img_val, str):
-        return ""
-    val = img_val.strip()
-    if not val:
-        return ""
-    if val.startswith("http://") or val.startswith("https://") or val.startswith("data:image"):
-        return val
-    if os.path.isfile(val):
-        try:
-            with open(val, "rb") as f:
-                ext = val.split(".")[-1].lower()
-                mime = "image/jpeg" if ext in ["jpg", "jpeg"] else f"image/{ext}"
-                return f"data:{mime};base64,{base64.b64encode(f.read()).decode()}"
-        except Exception:
-            return val
-    return val
-
-# ==========================================
-# AI 텍스트 -> JSON 파싱
-# ==========================================
-def generate_json_from_ai(api_key, context_text):
-    try:
-        genai.configure(api_key=api_key)
-        try:
-            available = []
-            for m in genai.list_models():
-                methods = getattr(m, "supported_generation_methods", []) or []
-                if "generateContent" in methods:
-                    available.append(m.name)
-        except Exception as e:
-            return {"error": f"모델 목록 조회 실패: {e}"}
-        if not available:
-            return {"error": "이 API 키로 generateContent 가능한 모델이 없습니다."}
-
-        preferred_order = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-001",
-                           "gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-1.5-flash-002",
-                           "gemini-1.5-pro", "gemini-1.5-pro-latest"]
-
-        def pick_model(avail_list):
-            short_names = {name.split("/")[-1]: name for name in avail_list}
-            for p in preferred_order:
-                if p in short_names:
-                    return short_names[p]
-            for n in avail_list:
-                if "flash" in n:
-                    return n
-            return avail_list[0]
-
-        chosen_model = pick_model(available)
-
-        now_kst = datetime.now(zoneinfo.ZoneInfo("Asia/Seoul"))
-        today_str = now_kst.strftime("%Y년 %m월 %d일")
-        year_str = now_kst.strftime("%Y")
-        quarter = (now_kst.month - 1) // 3 + 1
-
-        search_seed = (context_text or "")[:200].replace("\n", " ").strip()
-        web_context_parts = []
-        if search_seed:
-            web_context_parts.append(naver_search_text(search_seed))
-        web_context_parts.append(naver_search_text("포스코이앤씨 " + search_seed[:80]))
-        web_context = "\n".join([p for p in web_context_parts if p]).strip()
-        if not web_context:
-            web_context = "(외부 검색 결과 없음 - 입력 데이터에 기반한 정보만 사용)"
-
-        system_prompt = f"""당신은 비즈니스 컨설턴트이자 데이터 구조화 전문가입니다.
-[입력 데이터]와 [외부 검색 컨텍스트]를 분석하여 보고서용 JSON을 생성하세요.
-
-[현재 시점]
-- 오늘: {today_str}
-- 연도: {year_str}년 / 분기: {year_str}년 {quarter}분기
-- 과거 연도(2024, 2025년)를 "현재"로 표현 금지.
-
-[외부 검색 컨텍스트]
-{web_context}
-
-[JSON 스키마 - 필드 이름만 참고, 페이지/섹션 수와 탭명은 자유]
-{json.dumps(get_sample_json_guide(), ensure_ascii=False)}
-
-[절대 규칙]
-1. 환각 금지: 팀명/부서명/인물/프로젝트명/회사명/수치/날짜는 입력 데이터 또는 검색 컨텍스트에 명시된 것만 사용. 가상 이름 만들지 마세요.
-2. 정보가 부족하면 비우거나("") 일반적 표현("관련 부서", "담당자") 사용.
-3. lines/side_items/chart_data는 실제 정보로만. 추측 수치 금지.
-
-[작성 지침]
-1. 페이지/탭/섹션 수는 입력 분량에 맞게 자유 설계.
-2. chart_data는 실제 수치 있을 때만 "항목, 수치\\n항목, 수치" 형태.
-3. image_query는 영어 1~3단어 (한글 금지). 예: "safety training, helmet" / "business meeting" / "construction site, crane". 추상어("report", "summary", "data") 금지.
-4. 마크다운 코드블록 없이 순수 JSON만 출력.
-
-[입력 데이터]
-{context_text}
-"""
-
-        generation_config = {"response_mime_type": "application/json", "temperature": 0.4}
-        tried = []
-        candidates = [chosen_model] + [n for n in available if n != chosen_model]
-        response = None
-        for model_name in candidates:
-            try:
-                model = genai.GenerativeModel(model_name, generation_config=generation_config)
-                response = model.generate_content(system_prompt)
-                break
-            except Exception as e:
-                tried.append(f"{model_name}: {e}")
-                continue
-        if response is None:
-            return {"error": f"모든 모델 호출 실패: {tried}"}
-
-        clean_text = (response.text or "").strip()
-        if clean_text.startswith("```"):
-            clean_text = clean_text.split("\n", 1)[1] if "\n" in clean_text else clean_text[3:]
-        if clean_text.endswith("```"):
-            clean_text = clean_text[:-3]
-        clean_text = clean_text.strip()
-        return json.loads(clean_text)
     except Exception as e:
         return {"error": str(e)}
 
+
 # ==========================================
-# 4. ID 식별 및 음성 시스템
+# 6. ID 식별 및 Agora 음성
 # ==========================================
 if "uid" not in st.session_state:
     url_uid = st.query_params.get("uid")
     if url_uid:
         st.session_state.uid = url_uid
     else:
-        new_uid = f"u_{int(time.time() * 1000)}"
+        new_uid = f"u{int(time.time() * 1000)}"
         st.session_state.uid = new_uid
         st.query_params["uid"] = new_uid
 
@@ -663,15 +465,16 @@ if "user_label" not in st.session_state:
     active_now = len([s for s in shared_store["active_sessions"].values() if time.time() - s["last_seen"] < 10])
     st.session_state.user_label = f"참여자 {active_now + 1}"
 
+
 def agora_voice_system(app_id, channel, user_label):
     custom_html = f"""
 <script src="https://download.agora.io/sdk/release/AgoraRTC_N-4.11.0.js"></script>
 <div class="voice-panel">
-  <div id="v-status" style="font-size:13px; font-weight:700; margin-bottom:8px; color:#1e293b;">&#127897; {user_label}</div>
+  <div id="v-status" style="font-size:13px; font-weight:700; margin-bottom:8px; color:#1e293b;">🎙 {user_label}</div>
   <div style="width:100%; height:10px; background:#e2e8f0; border-radius:5px; margin-bottom:12px; overflow:hidden;">
     <div id="level-bar" style="width:0%; height:100%; background:#28a745; transition:width 0.05s;"></div>
   </div>
-  <button id="mute" class="btn-mute">&#127908; 마이크 : 켜짐</button>
+  <button id="mute" class="btn-mute">🎤 마이크 : 켜짐</button>
 </div>
 <script>
 let client = AgoraRTC.createClient( mode: "rtc", codec: "vp8" );
@@ -694,10 +497,10 @@ async function join() {{
         
       }});
     }});
-    client.on("user-published", async (u, m) => {{
+    client.on("user-published", async (u, m) => 
       await client.subscribe(u, m);
-      if (m === "audio")  u.audioTrack.play(); 
-    }});
+      if (m === "audio") u.audioTrack.play();
+    );
   }} catch (e)  console.error(e); 
 }}
 
@@ -707,10 +510,10 @@ function toggleMute() {{
   localTracks.audioTrack.setEnabled(!isMuted);
   const btn = document.getElementById("mute");
   if (isMuted) 
-    btn.innerText = "\\uD83D\\uDD07 마이크 : 꺼짐";
+    btn.innerText = "🔇 마이크 : 꺼짐";
     btn.classList.add("active");
    else 
-    btn.innerText = "\\uD83C\\uDFA4 마이크 : 켜짐";
+    btn.innerText = "🎤 마이크 : 켜짐";
     btn.classList.remove("active");
   
 }}
@@ -720,6 +523,7 @@ document.getElementById("mute").onclick = toggleMute;
 </script>
 """
     components.html(custom_html, height=160)
+
 
 @st.fragment(run_every="1s")
 def sync_member_list(my_uid):
@@ -738,10 +542,11 @@ def sync_member_list(my_uid):
         else:
             for label in sorted(temp_sessions.keys()):
                 display_name = label + (" (나)" if temp_sessions[label] else "")
-                st.markdown(f"🟢 **{display_name}**")
+                st.markdown(f"🟢 {display_name}")
+
 
 # ==========================================
-# 5. 사이드바
+# 7. 사이드바
 # ==========================================
 with st.sidebar:
     st.title("AI Live Sync")
@@ -766,48 +571,46 @@ with st.sidebar:
             except Exception:
                 ai_api_key = ""
                 st.warning("GEMINI_API_KEY 설정 필요")
-ai_text_input = st.text_area(
-    "텍스트 데이터 입력 (예: '5페이지로 안전 보고서 만들어줘. ...')"
-)
-ai_file_input = st.file_uploader(
-    "또는 문서 업로드 (PDF / TXT / CSV / MD)",
-    type=["pdf", "txt", "csv", "md"],  # ← pdf 추가
-)
+            ai_text_input = st.text_area(
+                "텍스트 데이터 입력 (예: '5페이지로 안전 보고서 만들어줘. ...')"
+            )
+            ai_file_input = st.file_uploader(
+                "또는 문서 업로드 (PDF / TXT / CSV / MD)",
+                type=["pdf", "txt", "csv", "md"],
+            )
 
-if st.button("AI 보고서 생성", use_container_width=True):
-    if not ai_api_key:
-        st.error("API Key 필요")
-    else:
-        context = ai_text_input or ""
-        if ai_file_input:
-            doc_text = extract_text_from_upload(ai_file_input)
-            context += f"\n\n[첨부 문서: {ai_file_input.name}]\n{doc_text}"
+            if st.button("AI 보고서 생성", use_container_width=True):
+                if not ai_api_key:
+                    st.error("API Key 필요")
+                else:
+                    context = ai_text_input or ""
+                    if ai_file_input:
+                        doc_text = extract_text_from_upload(ai_file_input)
+                        context += f"\n\n[첨부 문서: {ai_file_input.name}]\n{doc_text}"
 
-        if not context.strip():
-            st.error("텍스트나 문서를 입력해주세요.")
-        else:
-            # 사용자 지시에서 페이지 수 추출
-            req_pages = extract_requested_page_count(ai_text_input)
-            with st.spinner(
-                f"생성 중..."
-                + (f" ({req_pages}페이지로)" if req_pages else "")
-            ):
-                ai_result = generate_json_from_ai(
-                    ai_api_key, context, requested_pages=req_pages
-                )
-            if "error" in ai_result:
-                st.error(f"생성 실패: {ai_result['error']}")
-            else:
-                shared_store["report_data"] = adapt_json_format(ai_result)
-                shared_store["current_page"] = 0
-                st.success("완료!")
-                time.sleep(1)
-                st.rerun()
+                    if not context.strip():
+                        st.error("텍스트나 문서를 입력해주세요.")
+                    else:
+                        req_pages = extract_requested_page_count(ai_text_input)
+                        with st.spinner("생성 중..." + (f" ({req_pages}페이지로)" if req_pages else "")):
+                            ai_result = generate_json_from_ai(ai_api_key, context, requested_pages=req_pages)
+                            if "error" in ai_result:
+                                st.error(f"생성 실패: {ai_result['error']}")
+                            else:
+                                shared_store["report_data"] = adapt_json_format(ai_result)
+                                shared_store["current_page"] = 0
+                                st.success("완료!")
+                                time.sleep(1)
+                                st.rerun()
 
         st.write("---")
-        st.download_button("표준 양식 다운로드",
+        st.download_button(
+            "표준 양식 다운로드",
             data=json.dumps(get_sample_json_guide(), indent=4, ensure_ascii=False),
-            file_name="Report_Standard_Template.json", mime="application/json", use_container_width=True)
+            file_name="Report_Standard_Template.json",
+            mime="application/json",
+            use_container_width=True,
+        )
 
         uploaded_file = st.file_uploader("JSON 수동 로드", type=["json"])
         if uploaded_file:
@@ -822,21 +625,26 @@ if st.button("AI 보고서 생성", use_container_width=True):
             st.rerun()
 
         if shared_store["report_data"]:
-            st.download_button("최종 리포트 저장",
+            st.download_button(
+                "최종 리포트 저장",
                 data=json.dumps(shared_store["report_data"], indent=4, ensure_ascii=False),
-                file_name="My_Final_Report.json", use_container_width=True)
+                file_name="My_Final_Report.json",
+                use_container_width=True,
+            )
 
         edit_mode = st.toggle("편집 모드", value=False)
     else:
         edit_mode = False
 
+
 # ==========================================
-# 6. 메인 브리핑 엔진
+# 8. 메인 브리핑 엔진
 # ==========================================
 @st.fragment(run_every="1s")
 def main_content_area(edit_enabled):
     shared_store["active_sessions"][st.session_state.uid] = {
-        "label": my_label, "last_seen": time.time(),
+        "label": my_label,
+        "last_seen": time.time(),
         "voice_connected": st.session_state.get("voice_active_toggle", False),
     }
 
@@ -846,10 +654,16 @@ def main_content_area(edit_enabled):
         if c2.button("전송") and msg:
             shared_store["chat_history"].append(f"**{my_label}**: {msg}")
         chat_box = "".join([f"<div style='margin-bottom:6px;'>{m}</div>" for m in shared_store["chat_history"][-10:]])
-        st.markdown(f"<div style='height:120px; overflow-y:auto; background:#f8f9fa; padding:12px; border-radius:10px; border:1px solid #dee2e6;'>{chat_box}</div>", unsafe_allow_html=True)
+        st.markdown(
+            f"<div style='height:120px; overflow-y:auto; background:#f8f9fa; padding:12px; border-radius:10px; border:1px solid #dee2e6;'>{chat_box}</div>",
+            unsafe_allow_html=True,
+        )
 
     if shared_store["report_data"] is None:
-        st.markdown("<div style='text-align:center; padding:150px; color:#64748b;'><h2>좌측에서 AI 생성 또는 파일 로드</h2></div>", unsafe_allow_html=True)
+        st.markdown(
+            "<div style='text-align:center; padding:150px; color:#64748b;'><h2>좌측에서 AI 생성 또는 파일 로드</h2></div>",
+            unsafe_allow_html=True,
+        )
         if edit_enabled and st.button("새 보고서 시작"):
             shared_store["report_data"] = adapt_json_format({})
             st.rerun()
@@ -865,7 +679,10 @@ def main_content_area(edit_enabled):
             data["title_fs"] = dtc1.slider("제목 글자 크기", 20, 120, int(data.get("title_fs", 55)))
             data["title_color"] = dtc2.color_picker("제목 색상", data.get("title_color", "#0f172a"))
 
-    st.markdown(f'<h1 style="text-align:center; font-size:{data.get("title_fs", 55)}px; color:{data.get("title_color", "#0f172a")}; margin-bottom:10px;">{data.get("title", "")}</h1>', unsafe_allow_html=True)
+    st.markdown(
+        f'<h1 style="text-align:center; font-size:{data.get("title_fs", 55)}px; color:{data.get("title_color", "#0f172a")}; margin-bottom:10px;">{data.get("title", "")}</h1>',
+        unsafe_allow_html=True,
+    )
     st.markdown("<hr style='margin-top:0; margin-bottom:40px; border:0; border-top:1px solid #eee;'>", unsafe_allow_html=True)
 
     if cp_idx >= len(data["pages"]):
@@ -888,8 +705,12 @@ def main_content_area(edit_enabled):
 
     if is_reporter:
         tabs = {i: f"P{i+1}. {pg.get('tab', '')}" for i, pg in enumerate(data["pages"])}
-        shared_store["current_page"] = st.radio("이동", list(tabs.keys()),
-            index=shared_store["current_page"], format_func=lambda x: tabs[x], horizontal=True)
+        shared_store["current_page"] = st.radio(
+            "이동", list(tabs.keys()),
+            index=shared_store["current_page"],
+            format_func=lambda x: tabs[x],
+            horizontal=True,
+        )
 
     if edit_enabled:
         p["tab"] = st.text_input("탭 이름", p.get("tab", ""), key=f"tab_edit_{cp_idx}")
@@ -899,14 +720,19 @@ def main_content_area(edit_enabled):
             p["header_fs"] = hc1.slider("크기", 10, 150, int(p.get("header_fs", 35)), key=f"phfs_{cp_idx}")
             p["header_color"] = hc2.color_picker("색상", p.get("header_color", "#475569"), key=f"phc_{cp_idx}")
 
-    st.markdown(f'<h2 style="text-align:center; font-size:{p.get("header_fs", 35)}px; color:{p.get("header_color", "#475569")}; margin-bottom:30px;">{p.get("header", "")}</h2>', unsafe_allow_html=True)
+    st.markdown(
+        f'<h2 style="text-align:center; font-size:{p.get("header_fs", 35)}px; color:{p.get("header_color", "#475569")}; margin-bottom:30px;">{p.get("header", "")}</h2>',
+        unsafe_allow_html=True,
+    )
 
     sections = p.setdefault("sections", [])
     if edit_enabled and st.button("섹션 추가", key=f"add_sec_btn_{cp_idx}"):
-        sections.append({"title": "새 섹션", "title_fs": 32, "title_color": "#1a1c1e", "col_ratio": 1.5,
-                         "lines": [{"text": "내용", "size": 22, "color": "#1e293b"}],
-                         "main_image": None, "full_width": True, "image_query": "",
-                         "chart_type": "Bar", "chart_data": "", "side_items": []})
+        sections.append({
+            "title": "새 섹션", "title_fs": 32, "title_color": "#1a1c1e", "col_ratio": 1.5,
+            "lines": [{"text": "내용", "size": 22, "color": "#1e293b"}],
+            "main_image": None, "full_width": True, "image_query": "",
+            "chart_type": "Bar", "chart_data": "", "side_items": [],
+        })
         st.rerun()
 
     ERROR_IMG = "https://placehold.co/800x400/f8fafc/94a3b8?text=Image+Not+Found"
@@ -923,7 +749,10 @@ def main_content_area(edit_enabled):
                     sections.pop(s_idx)
                     st.rerun()
 
-            st.markdown(f"<h3 style='font-size:{sec.get('title_fs', 32)}px; color:{sec.get('title_color', '#1a1c1e')}; margin-bottom:20px; padding-bottom:12px; border-bottom:2px solid #f8f9fa;'>{sec.get('title')}</h3>", unsafe_allow_html=True)
+            st.markdown(
+                f"<h3 style='font-size:{sec.get('title_fs', 32)}px; color:{sec.get('title_color', '#1a1c1e')}; margin-bottom:20px; padding-bottom:12px; border-bottom:2px solid #f8f9fa;'>{sec.get('title')}</h3>",
+                unsafe_allow_html=True,
+            )
 
             col_main, col_side = st.columns([sec.get("col_ratio", 1.5), 1], gap="medium")
 
@@ -952,13 +781,18 @@ def main_content_area(edit_enabled):
                 if sec.get("main_image"):
                     final_src = render_image_src(sec["main_image"])
                     style = "width:100%;" if sec.get("full_width", True) else f"width:{sec.get('img_width', 750)}px; max-width:100%;"
-                    st.markdown(f'<div style="text-align:center;"><img src="{final_src}" onerror="this.onerror=null; this.src=\'{ERROR_IMG}\';" style="{style} border-radius:12px; margin-bottom:20px; box-shadow:0 4px 12px rgba(0,0,0,0.05);" /></div>', unsafe_allow_html=True)
+                    st.markdown(
+                        f'<div style="text-align:center;"><img src="{final_src}" onerror="this.onerror=null; this.src=\'{ERROR_IMG}\';" style="{style} border-radius:12px; margin-bottom:20px; box-shadow:0 4px 12px rgba(0,0,0,0.05);" /></div>',
+                        unsafe_allow_html=True,
+                    )
 
                 if edit_enabled:
                     with st.expander("차트 관리"):
-                        sec["chart_type"] = st.selectbox("종류", ["Bar", "Line", "Area"],
+                        sec["chart_type"] = st.selectbox(
+                            "종류", ["Bar", "Line", "Area"],
                             index=["Bar", "Line", "Area"].index(sec.get("chart_type", "Bar")) if sec.get("chart_type") in ["Bar", "Line", "Area"] else 0,
-                            key=f"ch_t_{cp_idx}_{s_idx}")
+                            key=f"ch_t_{cp_idx}_{s_idx}",
+                        )
                         sec["chart_data"] = st.text_area("데이터 (항목, 숫자)", value=sec.get("chart_data", ""), key=f"ch_d_{cp_idx}_{s_idx}")
 
                 if sec.get("chart_data"):
@@ -999,7 +833,10 @@ def main_content_area(edit_enabled):
                         st.rerun()
                 else:
                     for line in sec.get("lines", []):
-                        st.markdown(f'<p class="text-line" style="font-size:{line["size"]}px; color:{line["color"]}; font-weight:bold;">{line["text"]}</p>', unsafe_allow_html=True)
+                        st.markdown(
+                            f'<p class="text-line" style="font-size:{line["size"]}px; color:{line["color"]}; font-weight:bold;">{line["text"]}</p>',
+                            unsafe_allow_html=True,
+                        )
 
             with col_side:
                 sec.setdefault("side_items", [])
@@ -1048,7 +885,9 @@ def main_content_area(edit_enabled):
                             f'<div class="side-slot-card">'
                             f'<div style="font-size:{item.get("label_fs", 14)}px; color:{item.get("label_color", "#64748b")}; margin-bottom:8px;">{item.get("label", "")}</div>'
                             f'<div style="font-size:{item.get("value_fs", 28)}px; font-weight:bold; color:{item.get("color", "#007bff")}; line-height:1.5;">{fv}</div>'
-                            f'</div>', unsafe_allow_html=True)
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
                     elif item["type"] == "image":
                         if (not item.get("src")) and item.get("image_query"):
                             item["src"] = get_auto_image_url(item.get("image_query"), w=900, h=700)
@@ -1057,7 +896,10 @@ def main_content_area(edit_enabled):
                             st.markdown(
                                 f'<div class="side-slot-card">'
                                 f'<img src="{final_side_src}" onerror="this.onerror=null; this.src=\'{ERROR_IMG}\';" style="width:{item.get("width", 350)}px; max-width:100%; border-radius:12px; box-shadow:0 4px 12px rgba(0,0,0,0.08);" />'
-                                f'</div>', unsafe_allow_html=True)
+                                f'</div>',
+                                unsafe_allow_html=True,
+                            )
+
 
 # 실행
 main_content_area(edit_mode)
