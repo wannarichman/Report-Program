@@ -397,10 +397,15 @@ with st.sidebar:
         st.divider()
         
         # --- AI 생성 기능 ---
-        with st.expander("✨ AI 자동 보고서 생성 (Text/File)", expanded=False):
-            ai_api_key = st.text_input("Gemini API Key 입력", type="password", help="AI 모델 호출을 위해 필요합니다.")
+with st.expander("✨ AI 자동 보고서 생성 (Text/File)", expanded=False):
+            # 화면 입력창을 없애고, Streamlit Secrets에서 몰래 키를 꺼내옵니다.
+            try:
+                ai_api_key = st.secrets["GEMINI_API_KEY"]
+            except Exception:
+                ai_api_key = "" # 키를 못 찾으면 일단 빈 값 처리 (에러 방지)
+                st.warning("⚠️ 서버에 GEMINI_API_KEY가 설정되지 않았습니다.")
+
             ai_text_input = st.text_area("텍스트 데이터 입력", placeholder="회의록, 초안, 아이디어를 자유롭게 적어주세요.")
-            ai_file_input = st.file_uploader("또는 문서 업로드", type=["txt", "csv", "md"])
             
             if st.button("🚀 AI JSON 자동 생성", use_container_width=True):
                 if not ai_api_key:
