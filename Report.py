@@ -9,8 +9,7 @@ import copy
 import urllib.parse
 import requests
 import google.generativeai as genai
-from datetime import datetimeextrrac
-
+from datetime import datetime
 import zoneinfo
 import re
 from io import BytesIO
@@ -22,12 +21,36 @@ except Exception:
     HAS_PYPDF = False
 
 MAX_DOC_CHARS = 30000  # 무료 모델 토큰 보호용
-_FENCE = "`" * 3       # 트리플 백틱 상수 (코드펜스 비교용)
 
 
 # ==========================================
-# 0. 유틸: 업로드 파싱 / 페이지 수 추출 / 코드펜스 제거
+# 0. 유틸: 코드펜스 제거 / 페이지 수 추출
 # ==========================================
+def _strip_code_fence(text):
+    t = (text or "").strip()
+    if t.startswith("```"):
+        nl = t.find("\n")
+        if nl != -1:
+            t = t[nl + 1:]
+        if t.endswith("```"):
+            t = t[:-3]
+    return t.strip()
+
+
+def extract_requested_page_count(text):
+    if not text:
+        return None
+    m = re.search(r"(\d+)\s*(페이지|장|쪽|p)", str(text))
+    if m:
+        try:
+            n = int(m.group(1))
+            if 1 <= n <= 30:
+                return n
+        except Exception:
+            pass
+    return None
+
+
 # ==========================================
 # 0-1. 포맷별 텍스트 추출 헬퍼
 # ==========================================
@@ -60,21 +83,18 @@ def _extract_pptx(raw):
         out = []
         for i, slide in enumerate(prs.slides):
             buf = []
-            # 텍스트 박스
             for shape in slide.shapes:
                 if shape.has_text_frame:
                     for para in shape.text_frame.paragraphs:
                         line = "".join(run.text for run in para.runs).strip()
                         if line:
                             buf.append(line)
-                # 표
                 if getattr(shape, "has_table", False) and shape.has_table:
                     for row in shape.table.rows:
                         cells = [c.text.strip() for c in row.cells]
                         joined = " | ".join([c for c in cells if c])
                         if joined:
                             buf.append(joined)
-            # 발표자 노트
             try:
                 if slide.has_notes_slide:
                     note = slide.notes_slide.notes_text_frame.text.strip()
@@ -111,7 +131,6 @@ def _extract_docx(raw):
 
 
 def _extract_hwpx(raw):
-    """HWPX = zip(Contents/section*.xml)"""
     import zipfile
     import xml.etree.ElementTree as ET
     try:
@@ -139,7 +158,6 @@ def _extract_hwpx(raw):
 
 
 def _extract_hwp(raw):
-    """HWP 5.0 (OLE) - BodyText/Section* 의 PARA_TEXT(tag 67) 만 추출"""
     try:
         import olefile
         import zlib
@@ -148,7 +166,6 @@ def _extract_hwp(raw):
         return "[오류] olefile 미설치 (requirements.txt에 olefile 추가)"
     try:
         ole = olefile.OleFileIO(BytesIO(raw))
-        # 압축 여부 판별
         is_compressed = True
         try:
             header = ole.openstream("FileHeader").read()
@@ -205,14 +222,7 @@ def _extract_hwp(raw):
         return f"[HWP 파싱 오류] {e}"
 
 
-# ==========================================
-# 0-2. 통합 업로드 파서 (기존 extract_text_from_upload 교체)
-# ==========================================
 def extract_text_from_upload(uploaded_file):
-    """
-    Streamlit UploadedFile -> 평문 텍스트.
-    지원: pdf, pptx, ppt(제한), docx, hwp, hwpx, txt, md, csv, 기타 텍스트.
-    """
     if uploaded_file is None:
         return ""
     name = (uploaded_file.name or "").lower()
@@ -234,7 +244,6 @@ def extract_text_from_upload(uploaded_file):
     elif name.endswith(".hwp"):
         text = _extract_hwp(raw)
     else:
-        # txt / md / csv / 기타
         try:
             text = raw.decode("utf-8", errors="ignore")
         except Exception:
@@ -525,7 +534,7 @@ def generate_json_from_ai(api_key, context_text, requested_pages=None):
             web_context_parts.append(naver_search_text("포스코이앤씨 " + search_seed[:80]))
         web_context = "\n".join([p for p in web_context_parts if p]).strip()
         if not web_context:
-            web_context = "(외부 검색 결과 없음 — 입력 데이터 기반으로만 생성)"
+            web_context = "(외부 검색 결과 없음 - 입력 데이터 기반으로만 생성)"
 
         page_count_directive = (
             f"\n[페이지 수 제약]\n- pages 배열은 정확히 {requested_pages}개로 만들 것.\n"
@@ -796,6 +805,9 @@ with st.sidebar:
 # ==========================================
 # 8. 메인 브리핑 엔진
 # ==========================================
+ERROR_IMG = "https://placehold.co/800x400/f8fafc/94a3b8?text=Image+Not+Found"
+
+
 @st.fragment(run_every="1s")
 def main_content_area(edit_enabled):
     shared_store["active_sessions"][st.session_state.uid] = {
@@ -891,8 +903,6 @@ def main_content_area(edit_enabled):
         })
         st.rerun()
 
-    ERROR_IMG = "https://placehold.co/800x400/f8fafc/94a3b8?text=Image+Not+Found"
-
     for s_idx, sec in enumerate(sections):
         with st.container(border=True):
             if edit_enabled:
@@ -915,8 +925,8 @@ def main_content_area(edit_enabled):
             with col_main:
                 if edit_enabled:
                     with st.expander("이미지 관리"):
-                        current_img = sec.get("main_image", "")
-                        display_img_url = "" if (isinstance(current_img, str) and current_img.startswith("data:image")) else (current_img or "")
+                        current_img = sec.get("main_image", "") or ""
+                        display_img_url = "" if (isinstance(current_img, str) and current_img.startswith("data:image")) else current_img
                         new_img_url = st.text_input("URL", value=display_img_url, key=f"simg_url_{cp_idx}_{s_idx}")
                         sec["image_query"] = st.text_input("자동 검색어 (영어)", value=sec.get("image_query", ""), key=f"simg_q_{cp_idx}_{s_idx}")
                         img_f = st.file_uploader("업로드", type=["png", "jpg", "jpeg", "gif"], key=f"simg_f_{cp_idx}_{s_idx}")
@@ -938,7 +948,7 @@ def main_content_area(edit_enabled):
                     final_src = render_image_src(sec["main_image"])
                     style = "width:100%;" if sec.get("full_width", True) else f"width:{sec.get('img_width', 750)}px; max-width:100%;"
                     st.markdown(
-                        f'<div style="text-align:center;"><img src="{final_src}" onerror="this.onerror=null; this.src=\'{ERROR_IMG}\';" style="{style} border-radius:12px; margin-bottom:20px; box-shadow:0 4px 12px rgba(0,0,0,0.05);" /></div>',
+                        f'<div style="text-align:center;"><img src="{final_src}" onerror="this.onerror=null; this.src=\\'{ERROR_IMG}\\';" style="{style} border-radius:12px; margin-bottom:20px; box-shadow:0 4px 12px rgba(0,0,0,0.05);" /></div>',
                         unsafe_allow_html=True,
                     )
 
@@ -1018,8 +1028,8 @@ def main_content_area(edit_enabled):
                                 item["value_fs"] = ic5.number_input("내용크기", 10, 100, int(item.get("value_fs", 28)), key=f"si_vfs_{cp_idx}_{s_idx}_{i_idx}")
                                 item["color"] = ic6.color_picker("내용색상", item.get("color", "#007bff"), key=f"si_vc_{cp_idx}_{s_idx}_{i_idx}")
                             elif item["type"] == "image":
-                                current_side = item.get("src", "")
-                                display_side = "" if (isinstance(current_side, str) and current_side.startswith("data:image")) else (current_side or "")
+                                current_side = item.get("src", "") or ""
+                                display_side = "" if (isinstance(current_side, str) and current_side.startswith("data:image")) else current_side
                                 new_side_url = st.text_input("URL", value=display_side, key=f"si_url_{cp_idx}_{s_idx}_{i_idx}")
                                 item["image_query"] = st.text_input("검색어(영어)", value=item.get("image_query", ""), key=f"si_q_{cp_idx}_{s_idx}_{i_idx}")
                                 siu = st.file_uploader("업로드", type=["png", "jpg", "jpeg", "gif"], key=f"si_iu_{cp_idx}_{s_idx}_{i_idx}")
@@ -1051,7 +1061,7 @@ def main_content_area(edit_enabled):
                             final_side_src = render_image_src(item["src"])
                             st.markdown(
                                 f'<div class="side-slot-card">'
-                                f'<img src="{final_side_src}" onerror="this.onerror=null; this.src=\'{ERROR_IMG}\';" style="width:{item.get("width", 350)}px; max-width:100%; border-radius:12px; box-shadow:0 4px 12px rgba(0,0,0,0.08);" />'
+                                f'<img src="{final_side_src}" onerror="this.onerror=null; this.src=\\'{ERROR_IMG}\\';" style="width:{item.get("width", 350)}px; max-width:100%; border-radius:12px; box-shadow:0 4px 12px rgba(0,0,0,0.08);" />'
                                 f'</div>',
                                 unsafe_allow_html=True,
                             )
