@@ -232,8 +232,11 @@ def render_image_src(img_val):
         except Exception: return val
     return val
 
+from datetime import datetime
+import zoneinfo  # Python 3.9 미만이면 pytz 사용
+
 # ==========================================
-# [핵심] AI 텍스트 -> JSON 파싱 로직 (사용 가능한 모델 자동 탐색)
+# [핵심] AI 텍스트 -> JSON 파싱 로직 (모델 자동 탐색 + 날짜 주입 + 양식 자유화)
 # ==========================================
 def generate_json_from_ai(api_key, context_text):
     try:
@@ -265,12 +268,10 @@ def generate_json_from_ai(api_key, context_text):
         ]
 
         def pick_model(avail_list):
-            # avail_list 예: ["models/gemini-2.5-flash", ...]
             short_names = {name.split("/")[-1]: name for name in avail_list}
             for p in preferred_order:
                 if p in short_names:
                     return short_names[p]
-            # 선호 모델이 하나도 없으면 flash 계열 우선, 그래도 없으면 첫 번째
             for n in avail_list:
                 if "flash" in n:
                     return n
@@ -278,64 +279,31 @@ def generate_json_from_ai(api_key, context_text):
 
         chosen_model = pick_model(available)
 
+        # ===== ⬇️ 여기서부터 system_prompt 부분만 새로 작성 ⬇️ =====
+        # 현재 한국 시간 주입
+        now_kst = datetime.now(zoneinfo.ZoneInfo("Asia/Seoul"))
+        today_str = now_kst.strftime("%Y년 %m월 %d일")
+        year_str = now_kst.strftime("%Y")
+        quarter = (now_kst.month - 1) // 3 + 1
+
         system_prompt = f"""
 당신은 뛰어난 비즈니스 컨설턴트이자 데이터 구조화 전문가입니다.
-사용자가 제공한 [입력 데이터]를 분석하여, 아래 [표준 JSON 양식] 구조에 맞는 완벽한 JSON 데이터를 생성하십시오.
+사용자가 제공한 [입력 데이터]를 분석하여, 보고서용 JSON 데이터를 생성하십시오.
 
-[표준 JSON 양식 참조]
+[현재 시점 정보 — 반드시 이 기준으로 사고할 것]
+- 오늘 날짜: {today_str}
+- 현재 연도: {year_str}년
+- 현재 분기: {year_str}년 {quarter}분기
+- 절대로 과거 연도(예: 2024년, 2025년)를 "현재"나 "다가오는"으로 표현하지 마세요.
+- 입력 데이터에 연도 표기가 없으면 모두 {year_str}년 기준으로 해석하세요.
+
+[JSON 출력 스키마 — 구조(필드 이름)만 따르고, 페이지 수/섹션 수/탭명은 자유]
 {json.dumps(get_sample_json_guide(), ensure_ascii=False)}
 
-지시사항:
-1. P1(요약), P2(상세), P3(액션/리스크) 3페이지 구조를 유지하세요.
-2. 사용자의 데이터를 기반으로 각 섹션의 lines, side_items(metric), chart_data를 알아서 작성하세요.
-3. 차트가 필요한 수치 데이터가 있다면 P2의 chart_data 필드에 "항목, 수치\\n항목, 수치" 형태로 작성하세요.
-4. 마크다운 코드블록 없이 오직 파싱 가능한 순수 JSON 문자열만 출력하세요.
-
-[입력 데이터]
-{context_text}
-"""
-
-        generation_config = {
-            "response_mime_type": "application/json",
-            "temperature": 0.4,
-        }
-
-        # 선택한 모델로 호출 (실패 시 나머지 후보로 fallback)
-        tried = []
-        last_error = None
-        candidates = [chosen_model] + [n for n in available if n != chosen_model]
-
-        response = None
-        for model_name in candidates:
-            try:
-                model = genai.GenerativeModel(
-                    model_name,
-                    generation_config=generation_config,
-                )
-                response = model.generate_content(system_prompt)
-                break
-            except Exception as e:
-                tried.append(f"{model_name}: {e}")
-                last_error = e
-                continue
-
-        if response is None:
-            return {"error": f"모든 모델 호출 실패. 시도 내역: {tried}"}
-
-        clean_text = (response.text or "").strip()
-
-        # ```json ... ``` 코드블록이 섞여 들어오는 경우 안전 제거
-        if clean_text.startswith("```"):
-            clean_text = clean_text.split("\n", 1)[1] if "\n" in clean_text else clean_text[3:]
-        if clean_text.endswith("```"):
-            clean_text = clean_text[:-3]
-        clean_text = clean_text.strip()
-
-        parsed_json = json.loads(clean_text)
-        return parsed_json
-
-    except Exception as e:
-        return {"error": str(e)}
+[작성 지침]
+1. 위 표준 양식은 "필드 구조 참고용"일 뿐입니다. 페이지 개수, 탭 이름, 섹션 구성, 메트릭 항목은
+   입력 데이터의 성격과 분량에 가장 적합하게 자유롭게 설계하세요.
+   (예: 단순 회의록은 1~2페이지, 분기보고는 4
         
 # ==========================================
 # 4. ID 식별 및 음성 시스템 
