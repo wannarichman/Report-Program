@@ -229,24 +229,50 @@ def render_image_src(img_val):
     return val
 
 # ==========================================
-# [핵심] AI 텍스트 -> JSON 파싱 로직 (모든 환경 호환 gemini-pro 적용)
-# ==========================================
-# ==========================================
-# [핵심] AI 텍스트 -> JSON 파싱 로직 (최신 Gemini 모델 적용)
+# [핵심] AI 텍스트 -> JSON 파싱 로직 (사용 가능한 모델 자동 탐색)
 # ==========================================
 def generate_json_from_ai(api_key, context_text):
     try:
         genai.configure(api_key=api_key)
 
-        # ✅ 최신 SDK에서 지원하는 안정 모델로 교체
-        # (gemini-pro 는 v1beta 에서 제거되어 404 발생)
-        # 우선순위대로 fallback 시도
-        candidate_models = [
+        # ✅ 현재 API 키로 실제 호출 가능한 모델 목록을 동적으로 조회
+        try:
+            available = []
+            for m in genai.list_models():
+                methods = getattr(m, "supported_generation_methods", []) or []
+                if "generateContent" in methods:
+                    available.append(m.name)  # 예: "models/gemini-2.5-flash"
+        except Exception as e:
+            return {"error": f"모델 목록 조회 실패 (SDK 또는 API Key 문제 가능성): {e}"}
+
+        if not available:
+            return {"error": "이 API 키로 generateContent 가능한 모델이 없습니다. AI Studio에서 키를 다시 발급받아 주세요."}
+
+        # 선호 순위 (있으면 먼저 사용, 없으면 다음 후보로)
+        preferred_order = [
+            "gemini-2.5-flash",
             "gemini-2.0-flash",
+            "gemini-2.0-flash-001",
             "gemini-1.5-flash",
             "gemini-1.5-flash-latest",
+            "gemini-1.5-flash-002",
+            "gemini-1.5-pro",
             "gemini-1.5-pro-latest",
         ]
+
+        def pick_model(avail_list):
+            # avail_list 예: ["models/gemini-2.5-flash", ...]
+            short_names = {name.split("/")[-1]: name for name in avail_list}
+            for p in preferred_order:
+                if p in short_names:
+                    return short_names[p]
+            # 선호 모델이 하나도 없으면 flash 계열 우선, 그래도 없으면 첫 번째
+            for n in avail_list:
+                if "flash" in n:
+                    return n
+            return avail_list[0]
+
+        chosen_model = pick_model(available)
 
         system_prompt = f"""
 당신은 뛰어난 비즈니스 컨설턴트이자 데이터 구조화 전문가입니다.
@@ -265,34 +291,37 @@ def generate_json_from_ai(api_key, context_text):
 {context_text}
 """
 
-        # JSON 출력 강제 (지원되는 모델에서 더 안정적)
         generation_config = {
             "response_mime_type": "application/json",
             "temperature": 0.4,
         }
 
+        # 선택한 모델로 호출 (실패 시 나머지 후보로 fallback)
+        tried = []
         last_error = None
+        candidates = [chosen_model] + [n for n in available if n != chosen_model]
+
         response = None
-        for model_name in candidate_models:
+        for model_name in candidates:
             try:
                 model = genai.GenerativeModel(
                     model_name,
                     generation_config=generation_config,
                 )
                 response = model.generate_content(system_prompt)
-                break  # 성공하면 루프 탈출
+                break
             except Exception as e:
+                tried.append(f"{model_name}: {e}")
                 last_error = e
                 continue
 
         if response is None:
-            return {"error": f"사용 가능한 모델이 없습니다. 마지막 에러: {last_error}"}
+            return {"error": f"모든 모델 호출 실패. 시도 내역: {tried}"}
 
         clean_text = (response.text or "").strip()
 
         # ```json ... ``` 코드블록이 섞여 들어오는 경우 안전 제거
         if clean_text.startswith("```"):
-            # 첫 줄(```json 또는 ```) 제거
             clean_text = clean_text.split("\n", 1)[1] if "\n" in clean_text else clean_text[3:]
         if clean_text.endswith("```"):
             clean_text = clean_text[:-3]
@@ -303,7 +332,7 @@ def generate_json_from_ai(api_key, context_text):
 
     except Exception as e:
         return {"error": str(e)}
-
+        
 # ==========================================
 # 4. ID 식별 및 음성 시스템 
 # ==========================================
