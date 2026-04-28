@@ -1,5 +1,5 @@
 streamlit
 streamlit-webrtc
 pandas
-google-generativeai>=0.7.2
+google-generativeai>=0.8.3
 requests
