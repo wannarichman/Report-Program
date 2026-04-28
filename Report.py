@@ -205,13 +205,17 @@ def adapt_json_format(raw_data):
     return get_sample_json_guide()
 
 def get_auto_image_url(query: str, w: int = 1600, h: int = 900) -> str:
+    """검색어와 실제로 관련 있는 이미지를 반환 (LoremFlickr - Flickr 기반)."""
     if not isinstance(query, str):
         return ""
     q = query.strip()
     if not q:
         return ""
-    q_enc = urllib.parse.quote(q)
-    return f"https://picsum.photos/seed/{q_enc}/{w}/{h}"
+    # 쉼표로 다중 태그 지원 ("business, meeting, office")
+    tags = ",".join([urllib.parse.quote(t.strip()) for t in q.split(",") if t.strip()])
+    # lock 파라미터로 동일 검색어에 동일 이미지 고정 (캐싱 안정화)
+    lock = abs(hash(q)) % 100000
+    return f"https://loremflickr.com/{w}/{h}/{tags}?lock={lock}"
 
 def render_image_src(img_val):
     if not img_val: return ""
