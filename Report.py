@@ -91,7 +91,311 @@ def adapt_json_format(raw_data):
             raw_data["title_color"] = "#0f172a"
         return raw_data
     return get_sample_json_guide()
+# ==========================================
+# 3-1. JSON 자동 보정 (스타일 기본값 채움 + 구조 강제)
+# ==========================================
+DEFAULT_LINE = {"text": "", "size": 22, "color": "#1e293b"}
+DEFAULT_METRIC = {
+    "type": "metric", "label": "항목", "value": "",
+    "color": "#007bff", "label_fs": 14, "label_color": "#64748b", "value_fs": 28,
+}
+DEFAULT_IMAGE_ITEM = {"type": "image", "src": None, "width": 350, "image_query": ""}
 
+def _normalize_section(sec):
+    sec.setdefault("title", "섹션")
+    sec.setdefault("title_fs", 32)
+    sec.setdefault("title_color", "#1a1c1e")
+    sec.setdefault("col_ratio", 1.5)
+    sec.setdefault("main_image", None)
+    sec.setdefault("full_width", True)
+    sec.setdefault("image_query", "")
+    sec.setdefault("chart_type", "Bar")
+    sec.setdefault("chart_data", "")
+    # lines
+    raw_lines = sec.get("lines") or []
+    fixed_lines = []
+    for ln in raw_lines:
+        if isinstance(ln, str):
+            fixed_lines.append({**DEFAULT_LINE, "text": ln})
+        elif isinstance(ln, dict):
+            base = dict(DEFAULT_LINE)
+            base.update({k: v for k, v in ln.items() if v is not None})
+            fixed_lines.append(base)
+    sec["lines"] = fixed_lines
+    # side_items
+    raw_items = sec.get("side_items") or []
+    fixed_items = []
+    for it in raw_items:
+        if not isinstance(it, dict):
+            continue
+        t = it.get("type", "metric")
+        if t == "metric":
+            base = dict(DEFAULT_METRIC)
+            base.update({k: v for k, v in it.items() if v is not None})
+            fixed_items.append(base)
+        elif t == "image":
+            base = dict(DEFAULT_IMAGE_ITEM)
+            base.update({k: v for k, v in it.items() if v is not None})
+            fixed_items.append(base)
+    sec["side_items"] = fixed_items
+    return sec
+
+
+def adapt_json_format(raw_data):
+    # AI 가 완전히 다른 구조를 넘기면 샘플로 fallback
+    if not isinstance(raw_data, dict) or "pages" not in raw_data or not isinstance(raw_data["pages"], list):
+        return get_sample_json_guide()
+    raw_data.setdefault("title", "AI 자동 생성 보고서")
+    raw_data.setdefault("title_fs", 55)
+    raw_data.setdefault("title_color", "#0f172a")
+    fixed_pages = []
+    for pg in raw_data["pages"]:
+        if not isinstance(pg, dict):
+            continue
+        pg.setdefault("tab", "페이지")
+        pg.setdefault("header", "")
+        pg.setdefault("header_fs", 35)
+        pg.setdefault("header_color", "#475569")
+        secs = pg.get("sections") or []
+        pg["sections"] = [_normalize_section(s) for s in secs if isinstance(s, dict)]
+        # 섹션이 하나도 없으면 빈 섹션 1개라도 넣어주기
+        if not pg["sections"]:
+            pg["sections"] = [_normalize_section({"title": pg["header"] or pg["tab"], "lines": []})]
+        fixed_pages.append(pg)
+    if not fixed_pages:
+        return get_sample_json_guide()
+    raw_data["pages"] = fixed_pages
+    return raw_data
+
+
+# ==========================================
+# 3-2. 코드 펜스 제거 (안전한 버전)
+# ==========================================
+def _strip_code_fence(text):
+    s = (text or "").strip()
+    if s.startswith("```"):
+        # 맨 앞 ```lang 제거
+        nl = s.find("\n")
+        s = s[nl + 1:] if nl != -1 else s[3:]
+    if s.endswith("```"):
+        s = s[:-3]
+    return s.strip()
+
+
+# ==========================================
+# 3-3. AI 프롬프트 강화
+# ==========================================
+def generate_json_from_ai(api_key, context_text):
+    try:
+        genai.configure(api_key=api_key)
+        try:
+            available = []
+            for m in genai.list_models():
+                methods = getattr(m, "supported_generation_methods", []) or []
+                if "generateContent" in methods:
+                    available.append(m.name)
+        except Exception as e:
+            return {"error": f"모델 목록 조회 실패: {e}"}
+        if not available:
+            return {"error": "이 API 키로 generateContent 가능한 모델이 없습니다."}
+
+        preferred_order = [
+            "gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-001",
+            "gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-1.5-flash-002",
+            "gemini-1.5-pro", "gemini-1.5-pro-latest",
+        ]
+
+        def pick_model(avail_list):
+            short_names = {name.split("/")[-1]: name for name in avail_list}
+            for p in preferred_order:
+                if p in short_names:
+                    return short_names[p]
+            for n in avail_list:
+                if "flash" in n:
+                    return n
+            return avail_list[0]
+
+        chosen_model = pick_model(available)
+
+        now_kst = datetime.now(zoneinfo.ZoneInfo("Asia/Seoul"))
+        today_str = now_kst.strftime("%Y년 %m월 %d일")
+        year_str = now_kst.strftime("%Y")
+        quarter = (now_kst.month - 1) // 3 + 1
+
+        search_seed = (context_text or "")[:200].replace("\n", " ").strip()
+        web_context_parts = []
+        if search_seed:
+            web_context_parts.append(naver_search_text(search_seed))
+            web_context_parts.append(naver_search_text("포스코이앤씨 " + search_seed[:80]))
+        web_context = "\n".join([p for p in web_context_parts if p]).strip()
+        if not web_context:
+            web_context = "(외부 검색 결과 없음 — 입력 데이터 기반으로만 생성)"
+
+        # ----- 1) 스키마: 값 없이 '키 설명'만 -----
+        schema_doc = """
+{
+  "title": "보고서 전체 제목 (한글, 30자 이내)",
+  "title_fs": 55,
+  "title_color": "#0f172a",
+  "pages": [
+    {
+      "tab": "탭 이름 (예: 요약 / 상세 / 액션)",
+      "header": "페이지 한 줄 소제목",
+      "header_fs": 35,
+      "header_color": "#475569",
+      "sections": [
+        {
+          "title": "섹션 제목",
+          "title_fs": 32,
+          "title_color": "#1a1c1e",
+          "col_ratio": 1.5,
+          "main_image": null,
+          "full_width": true,
+          "image_query": "영어 1~3단어 검색어 (예: 'construction site, crane'). 다만 한국 특수 상황이면 빈 문자열",
+          "chart_type": "Bar | Line | Area 중 하나",
+          "chart_data": "실제 수치 있을 때만 '항목, 수치\\n항목, 수치' 형식. 없으면 빈 문자열",
+          "lines": [
+            { "text": "본문 불렷 1줄 (10~80자, 입력 데이터 기반 재작성)", "size": 22, "color": "#1e293b" }
+          ],
+          "side_items": [
+            { "type": "metric", "label": "지표명", "value": "값 또는 여러줄은 \\n으로",
+              "color": "#007bff", "label_fs": 14, "label_color": "#64748b", "value_fs": 28 }
+          ]
+        }
+      ]
+    }
+  ]
+}
+""".strip()
+
+        # ----- 2) Few-shot 예제 (입력 → 구조 전환) -----
+        few_shot = """
+[예시 입력]
+이번 주 현장 안전교육 100% 이수. 고소작업 단속도 높이고 있으며, 다음 주까지 타워크레인 반입 일정.
+
+[예시 출력 (포맷만 참고, 내용은 입력에 따라 다르게)]
+{
+  "title": "주간 안전/공정 보고",
+  "title_fs": 55,
+  "title_color": "#0f172a",
+  "pages": [
+    {
+      "tab": "요약", "header": "금주 핵심 요약",
+      "header_fs": 35, "header_color": "#475569",
+      "sections": [
+        {
+          "title": "금주 핵심 성과",
+          "title_fs": 32, "title_color": "#1a1c1e", "col_ratio": 1.5,
+          "main_image": null, "full_width": true,
+          "image_query": "safety training, helmet",
+          "chart_type": "Bar", "chart_data": "",
+          "lines": [
+            { "text": "• 현장 안전교육 이수율 100% 달성", "size": 24, "color": "#1e293b" },
+            { "text": "• 고소작업 단속도 상향으로 잠재 리스크 감소", "size": 22, "color": "#1e293b" }
+          ],
+          "side_items": [
+            { "type": "metric", "label": "교육 이수율", "value": "100%",
+              "color": "#16a34a", "label_fs": 14, "label_color": "#64748b", "value_fs": 34 }
+          ]
+        }
+      ]
+    },
+    {
+      "tab": "일정", "header": "다음 주 주요 일정",
+      "header_fs": 35, "header_color": "#475569",
+      "sections": [
+        {
+          "title": "일정 요약",
+          "title_fs": 32, "title_color": "#1a1c1e", "col_ratio": 1.5,
+          "main_image": null, "full_width": true, "image_query": "construction site, crane",
+          "chart_type": "Bar", "chart_data": "",
+          "lines": [
+            { "text": "1) 타워크레인 반입 예정", "size": 22, "color": "#1e293b" }
+          ],
+          "side_items": [
+            { "type": "metric", "label": "핵심 일정", "value": "D-7: 타워크레인 반입",
+              "color": "#0ea5e9", "label_fs": 14, "label_color": "#64748b", "value_fs": 22 }
+          ]
+        }
+      ]
+    }
+  ]
+}
+""".strip()
+
+        system_prompt = f"""당신은 포스코이앤씨에서 쓰이는 **주간/프로젝트 보고서 JSON 생성기** 입니다.
+반드시 아래 규칙을 따라 입력 데이터를 보고서 JSON으로 구조화하세요.
+
+[출력 형식]
+- **순수 JSON 하나만 출력** (마크다운/코드펜스 절대 금지).
+- 최상위 키: title, title_fs, title_color, pages.
+- pages는 최소 2개, 최대 5개. 각 페이지는 sections 최소 1개.
+- 각 섹션은 lines 최소 2개, side_items 최소 1개 포함.
+- 아래 스키마 키는 절대 생략 금지 (스타일 숨자 계속 유지).
+
+[현재 시점]
+- 오늘: {today_str} / {year_str}년 {quarter}분기. 과거 연도(2024, 2025년)를 '현재'로 표현 금지.
+
+[스키마 골격 (값은 설명, 실제 값은 입력 데이터에서 도출)]
+{schema_doc}
+
+[Few-shot 예시 - 참고용, 그대로 복사 금지]
+{few_shot}
+
+[내용 규칙 - 중요]
+1. **표준양식 그대로 복사 금지**: "금주 핵심 성과 1", "할 일" 같은 플레이스홀더 문구 그대로 돌려주면 안 됨. 반드시 입력 데이터에서 재작성.
+2. **입력 데이터에서 최대한 많은 정보를 끈어냄**: 3줄을 주면 5~10줄의 의미있는 하위 항목으로 재구조화하세요(단, 수치/고유명사는 만들지 않음).
+3. **환각 방지**: 팀명/부서명/인물명/수치/날짜는 입력에 있는 것만 사용. 없으면 "관련 부서", "담당자" 등 일반적 표현.
+4. **chart_data**: 입력에 수치가 명확히 있을 때만 "항목, 수치\\n..." 형식. 없으면 고수 "". 임의 수치 생성 금지.
+5. **image_query**: 영어 1~3단어(한글 금지). "report", "summary", "data" 같은 추상어 금지. 적절한 단서가 없으면 "".
+6. **탭 분류는 입력의 내용에 맞게**: 요약/상세/액션이 기본이지만 입력이 프로젝트라면 프로젝트 계획/일정/이슈 등으로 재구성.
+
+[외부 검색 컨텍스트 - 참고용, 장단점/트렌드 파악에 활용]
+{web_context}
+
+[입력 데이터]
+{context_text}
+
+[다시 강조]
+- JSON 만 출력. 설명, 머릿말, 코드펜스 금지.
+- 모든 sections에 lines/side_items 다 쓰세요(빈 배열 금지).
+"""
+
+        generation_config = {"response_mime_type": "application/json", "temperature": 0.55}
+        tried = []
+        candidates = [chosen_model] + [n for n in available if n != chosen_model]
+        response = None
+        for model_name in candidates:
+            try:
+                model = genai.GenerativeModel(model_name, generation_config=generation_config)
+                response = model.generate_content(system_prompt)
+                break
+            except Exception as e:
+                tried.append(f"{model_name}: {e}")
+                continue
+        if response is None:
+            return {"error": f"모든 모델 호출 실패: {tried}"}
+
+        clean_text = _strip_code_fence(response.text or "")
+        try:
+            parsed = json.loads(clean_text)
+        except Exception as e:
+            # 디버깅용 원문 일부 동봉
+            return {"error": f"JSON 파싱 실패: {e}\n동봉(앞 500자): {clean_text[:500]}"}
+
+        # 테스트: 구조가 테텍한지 계산
+        n_pages = len(parsed.get("pages", []))
+        n_lines_total = sum(
+            len(s.get("lines", []))
+            for p in parsed.get("pages", [])
+            for s in p.get("sections", [])
+        )
+        if n_pages == 0 or n_lines_total == 0:
+            return {"error": "모델이 빈 보고서를 돌려주었습니다. 입력을 더 자세히 적어주세요."}
+        return parsed
+    except Exception as e:
+        return {"error": str(e)}
+        
 # ==========================================
 # 외부 정보 수집 (네이버 검색 API)
 # ==========================================
