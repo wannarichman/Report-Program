@@ -467,61 +467,67 @@ if "user_label" not in st.session_state:
 
 
 def agora_voice_system(app_id, channel, user_label):
-    custom_html = f"""
+    custom_html = """
 <script src="https://download.agora.io/sdk/release/AgoraRTC_N-4.11.0.js"></script>
 <div class="voice-panel">
-  <div id="v-status" style="font-size:13px; font-weight:700; margin-bottom:8px; color:#1e293b;">🎙 {user_label}</div>
+  <div id="v-status" style="font-size:13px; font-weight:700; margin-bottom:8px; color:#1e293b;">🎙 __USER_LABEL__</div>
   <div style="width:100%; height:10px; background:#e2e8f0; border-radius:5px; margin-bottom:12px; overflow:hidden;">
     <div id="level-bar" style="width:0%; height:100%; background:#28a745; transition:width 0.05s;"></div>
   </div>
   <button id="mute" class="btn-mute">🎤 마이크 : 켜짐</button>
 </div>
 <script>
-let client = AgoraRTC.createClient( mode: "rtc", codec: "vp8" );
-let localTracks =  audioTrack: null ;
+let client = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
+let localTracks = { audioTrack: null };
 let isMuted = false;
 
-async function join() {{
-  try {{
-    await client.join("{app_id}", "{channel}", null, null);
+async function join() {
+  try {
+    await client.join("__APP_ID__", "__CHANNEL__", null, null);
     localTracks.audioTrack = await AgoraRTC.createMicrophoneAudioTrack();
     await client.publish([localTracks.audioTrack]);
     client.enableAudioVolumeIndicator();
-    client.on("volume-indicator", (vs) => {{
-      vs.forEach((v) => {{
-        if (v.uid === 0 && !isMuted) 
+    client.on("volume-indicator", (vs) => {
+      vs.forEach((v) => {
+        if (v.uid === 0 && !isMuted) {
           document.getElementById("level-bar").style.width = Math.min(v.level * 2, 100) + "%";
-        
-        if (isMuted) 
+        }
+        if (isMuted) {
           document.getElementById("level-bar").style.width = "0%";
-        
-      }});
-    }});
-    client.on("user-published", async (u, m) => 
+        }
+      });
+    });
+    client.on("user-published", async (u, m) => {
       await client.subscribe(u, m);
       if (m === "audio") u.audioTrack.play();
-    );
-  }} catch (e)  console.error(e); 
-}}
+    });
+  } catch (e) { console.error(e); }
+}
 
-function toggleMute() {{
+function toggleMute() {
   if (!localTracks.audioTrack) return;
   isMuted = !isMuted;
   localTracks.audioTrack.setEnabled(!isMuted);
   const btn = document.getElementById("mute");
-  if (isMuted) 
+  if (isMuted) {
     btn.innerText = "🔇 마이크 : 꺼짐";
     btn.classList.add("active");
-   else 
+  } else {
     btn.innerText = "🎤 마이크 : 켜짐";
     btn.classList.remove("active");
-  
-}}
+  }
+}
 
 join();
 document.getElementById("mute").onclick = toggleMute;
 </script>
 """
+    custom_html = (
+        custom_html
+        .replace("__APP_ID__", app_id)
+        .replace("__CHANNEL__", channel)
+        .replace("__USER_LABEL__", user_label)
+    )
     components.html(custom_html, height=160)
 
 
