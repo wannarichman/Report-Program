@@ -9,7 +9,7 @@ import copy
 import urllib.parse
 import requests
 import google.generativeai as genai
-from datetime import datetime
+from datetime import datetimeextrrac
 import zoneinfo
 import re
 from io import BytesIO
@@ -27,70 +27,219 @@ _FENCE = "`" * 3       # 트리플 백틱 상수 (코드펜스 비교용)
 # ==========================================
 # 0. 유틸: 업로드 파싱 / 페이지 수 추출 / 코드펜스 제거
 # ==========================================
+# ==========================================
+# 0-1. 포맷별 텍스트 추출 헬퍼
+# ==========================================
+def _extract_pdf(raw):
+    if not HAS_PYPDF:
+        return "[오류] pypdf 미설치 (requirements.txt에 pypdf>=4.0.0 추가)"
+    try:
+        reader = PdfReader(BytesIO(raw))
+        out = []
+        for i, page in enumerate(reader.pages):
+            try:
+                t = page.extract_text() or ""
+            except Exception:
+                t = ""
+            if t.strip():
+                out.append(f"--- [PDF p.{i+1}] ---\n{t.strip()}")
+        full = "\n\n".join(out).strip()
+        return full or "[알림] PDF에서 텍스트를 추출하지 못했습니다(스캔본/이미지 PDF 추정)."
+    except Exception as e:
+        return f"[PDF 파싱 오류] {e}"
+
+
+def _extract_pptx(raw):
+    try:
+        from pptx import Presentation
+    except ImportError:
+        return "[오류] python-pptx 미설치 (requirements.txt에 python-pptx 추가)"
+    try:
+        prs = Presentation(BytesIO(raw))
+        out = []
+        for i, slide in enumerate(prs.slides):
+            buf = []
+            # 텍스트 박스
+            for shape in slide.shapes:
+                if shape.has_text_frame:
+                    for para in shape.text_frame.paragraphs:
+                        line = "".join(run.text for run in para.runs).strip()
+                        if line:
+                            buf.append(line)
+                # 표
+                if getattr(shape, "has_table", False) and shape.has_table:
+                    for row in shape.table.rows:
+                        cells = [c.text.strip() for c in row.cells]
+                        joined = " | ".join([c for c in cells if c])
+                        if joined:
+                            buf.append(joined)
+            # 발표자 노트
+            try:
+                if slide.has_notes_slide:
+                    note = slide.notes_slide.notes_text_frame.text.strip()
+                    if note:
+                        buf.append(f"[노트] {note}")
+            except Exception:
+                pass
+            if buf:
+                out.append(f"--- [Slide {i+1}] ---\n" + "\n".join(buf))
+        return "\n\n".join(out).strip() or "[알림] PPTX에서 텍스트를 찾지 못했습니다."
+    except Exception as e:
+        return f"[PPTX 파싱 오류] {e}"
+
+
+def _extract_docx(raw):
+    try:
+        from docx import Document
+    except ImportError:
+        return "[오류] python-docx 미설치 (requirements.txt에 python-docx 추가)"
+    try:
+        doc = Document(BytesIO(raw))
+        out = []
+        for para in doc.paragraphs:
+            if para.text.strip():
+                out.append(para.text)
+        for table in doc.tables:
+            for row in table.rows:
+                line = " | ".join(c.text.strip() for c in row.cells)
+                if line.strip():
+                    out.append(line)
+        return "\n".join(out).strip() or "[알림] DOCX에서 텍스트를 찾지 못했습니다."
+    except Exception as e:
+        return f"[DOCX 파싱 오류] {e}"
+
+
+def _extract_hwpx(raw):
+    """HWPX = zip(Contents/section*.xml)"""
+    import zipfile
+    import xml.etree.ElementTree as ET
+    try:
+        out = []
+        with zipfile.ZipFile(BytesIO(raw)) as zf:
+            names = sorted([
+                n for n in zf.namelist()
+                if n.startswith("Contents/section") and n.endswith(".xml")
+            ])
+            for n in names:
+                try:
+                    root = ET.fromstring(zf.read(n))
+                except Exception:
+                    continue
+                texts = []
+                for elem in root.iter():
+                    tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+                    if tag == "t" and elem.text:
+                        texts.append(elem.text)
+                if texts:
+                    out.append("\n".join(texts))
+        return "\n\n".join(out).strip() or "[알림] HWPX에서 텍스트를 찾지 못했습니다."
+    except Exception as e:
+        return f"[HWPX 파싱 오류] {e}"
+
+
+def _extract_hwp(raw):
+    """HWP 5.0 (OLE) - BodyText/Section* 의 PARA_TEXT(tag 67) 만 추출"""
+    try:
+        import olefile
+        import zlib
+        import struct
+    except ImportError:
+        return "[오류] olefile 미설치 (requirements.txt에 olefile 추가)"
+    try:
+        ole = olefile.OleFileIO(BytesIO(raw))
+        # 압축 여부 판별
+        is_compressed = True
+        try:
+            header = ole.openstream("FileHeader").read()
+            if len(header) > 36:
+                is_compressed = bool(header[36] & 0x01)
+        except Exception:
+            pass
+
+        sections = [
+            s for s in ole.listdir(streams=True)
+            if "/".join(s).startswith("BodyText/Section")
+        ]
+        if not sections:
+            ole.close()
+            return "[알림] HWP에서 BodyText 섹션을 찾지 못했습니다(암호화/구버전 가능성). HWPX로 저장 후 다시 시도해 보세요."
+
+        chunks = []
+        for stream in sections:
+            try:
+                raw_stream = ole.openstream(stream).read()
+                data = zlib.decompress(raw_stream, -15) if is_compressed else raw_stream
+                i = 0
+                paras = []
+                while i + 4 <= len(data):
+                    head = struct.unpack("<I", data[i:i+4])[0]
+                    tag_id = head & 0x3FF
+                    size = (head >> 20) & 0xFFF
+                    i += 4
+                    if size == 0xFFF:
+                        if i + 4 > len(data):
+                            break
+                        size = struct.unpack("<I", data[i:i+4])[0]
+                        i += 4
+                    payload = data[i:i+size]
+                    i += size
+                    if tag_id == 67:  # HWPTAG_PARA_TEXT
+                        try:
+                            text = payload.decode("utf-16-le", errors="ignore")
+                            cleaned = "".join(
+                                ch for ch in text
+                                if ord(ch) >= 0x20 or ch in "\n\t"
+                            )
+                            if cleaned.strip():
+                                paras.append(cleaned)
+                        except Exception:
+                            pass
+                if paras:
+                    chunks.append("\n".join(paras))
+            except Exception:
+                continue
+        ole.close()
+        return "\n\n".join(chunks).strip() or "[알림] HWP 본문 텍스트를 추출하지 못했습니다."
+    except Exception as e:
+        return f"[HWP 파싱 오류] {e}"
+
+
+# ==========================================
+# 0-2. 통합 업로드 파서 (기존 extract_text_from_upload 교체)
+# ==========================================
 def extract_text_from_upload(uploaded_file):
-    """Streamlit UploadedFile -> 평문 텍스트. 지원: txt, md, csv, pdf."""
+    """
+    Streamlit UploadedFile -> 평문 텍스트.
+    지원: pdf, pptx, ppt(제한), docx, hwp, hwpx, txt, md, csv, 기타 텍스트.
+    """
     if uploaded_file is None:
         return ""
     name = (uploaded_file.name or "").lower()
     raw = uploaded_file.getvalue()
 
     if name.endswith(".pdf"):
-        if not HAS_PYPDF:
-            return "[오류] pypdf가 설치되지 않았습니다. requirements.txt에 pypdf>=4.0.0 추가 필요."
+        text = _extract_pdf(raw)
+    elif name.endswith(".pptx"):
+        text = _extract_pptx(raw)
+    elif name.endswith(".ppt"):
+        text = (
+            "[알림] .ppt(구버전) 형식은 직접 파싱이 제한됩니다. "
+            "PowerPoint에서 '다른 이름으로 저장 → .pptx' 후 다시 업로드해 주세요."
+        )
+    elif name.endswith(".docx"):
+        text = _extract_docx(raw)
+    elif name.endswith(".hwpx"):
+        text = _extract_hwpx(raw)
+    elif name.endswith(".hwp"):
+        text = _extract_hwp(raw)
+    else:
+        # txt / md / csv / 기타
         try:
-            reader = PdfReader(BytesIO(raw))
-            pages_text = []
-            for i, page in enumerate(reader.pages):
-                try:
-                    t = page.extract_text() or ""
-                except Exception:
-                    t = ""
-                if t.strip():
-                    pages_text.append(f"--- [PDF p.{i+1}] ---\n{t.strip()}")
-            full = "\n\n".join(pages_text).strip()
-            if not full:
-                return "[알림] PDF에서 텍스트를 추출하지 못했습니다(스캔본/이미지 PDF로 추정)."
-            return full[:MAX_DOC_CHARS]
-        except Exception as e:
-            return f"[PDF 파싱 오류] {e}"
+            text = raw.decode("utf-8", errors="ignore")
+        except Exception:
+            text = str(raw)
 
-    try:
-        text = raw.decode("utf-8", errors="ignore")
-    except Exception:
-        text = str(raw)
-    return text[:MAX_DOC_CHARS]
-
-
-def extract_requested_page_count(text):
-    """사용자 입력에서 'N페이지', 'N장', 'N pages' 패턴을 찾아 정수 반환. 없으면 None."""
-    if not text:
-        return None
-    patterns = [
-        r"(\d+)\s*페이지",
-        r"(\d+)\s*장(?:으로|짜리|분량)?",
-        r"(\d+)\s*pages?",
-        r"페이지\s*수\s*(?:는|=|:)\s*(\d+)",
-    ]
-    for p in patterns:
-        m = re.search(p, text, re.IGNORECASE)
-        if m:
-            try:
-                n = int(m.group(1))
-                if 1 <= n <= 12:
-                    return n
-            except Exception:
-                continue
-    return None
-
-
-def _strip_code_fence(text):
-    s = (text or "").strip()
-    if s.startswith(_FENCE):
-        nl = s.find("\n")
-        s = s[nl + 1:] if nl != -1 else s[3:]
-    if s.endswith(_FENCE):
-        s = s[:-3]
-    return s.strip()
+    return (text or "")[:MAX_DOC_CHARS]
 
 
 # ==========================================
