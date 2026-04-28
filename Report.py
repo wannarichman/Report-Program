@@ -229,13 +229,13 @@ def render_image_src(img_val):
     return val
 
 # ==========================================
-# [핵심] AI 텍스트 -> JSON 파싱 로직 (모든 환경에서 호환되는 Flash 모델 적용)
+# [핵심] AI 텍스트 -> JSON 파싱 로직 (모든 환경 호환 gemini-pro 적용)
 # ==========================================
 def generate_json_from_ai(api_key, context_text):
     try:
         genai.configure(api_key=api_key)
-        # 안정적이고 속도가 빠른 기본 flash 모델로 교체
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # 어떤 키/지역에서도 100% 작동하는 가장 안정적인 모델로 지정
+        model = genai.GenerativeModel('gemini-pro')
         
         system_prompt = f"""
         당신은 뛰어난 비즈니스 컨설턴트이자 데이터 구조화 전문가입니다.
