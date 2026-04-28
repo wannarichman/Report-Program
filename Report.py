@@ -948,7 +948,7 @@ def main_content_area(edit_enabled):
                     final_src = render_image_src(sec["main_image"])
                     style = "width:100%;" if sec.get("full_width", True) else f"width:{sec.get('img_width', 750)}px; max-width:100%;"
                     st.markdown(
-                        f'<div style="text-align:center;"><img src="{final_src}" onerror="this.onerror=null; this.src=\\'{ERROR_IMG}\\';" style="{style} border-radius:12px; margin-bottom:20px; box-shadow:0 4px 12px rgba(0,0,0,0.05);" /></div>',
+                        f'<div style="text-align:center;"><img src="{final_src}" onerror="this.onerror=null; this.src=\'{ERROR_IMG}\';" style="{style} border-radius:12px; margin-bottom:20px; box-shadow:0 4px 12px rgba(0,0,0,0.05);" /></div>',
                         unsafe_allow_html=True,
                     )
 
@@ -1061,7 +1061,7 @@ def main_content_area(edit_enabled):
                             final_side_src = render_image_src(item["src"])
                             st.markdown(
                                 f'<div class="side-slot-card">'
-                                f'<img src="{final_side_src}" onerror="this.onerror=null; this.src=\\'{ERROR_IMG}\\';" style="width:{item.get("width", 350)}px; max-width:100%; border-radius:12px; box-shadow:0 4px 12px rgba(0,0,0,0.08);" />'
+                                f'<img src="{final_side_src}" onerror="this.onerror=null; this.src=\'{ERROR_IMG}\';" style="width:{item.get("width", 350)}px; max-width:100%; border-radius:12px; box-shadow:0 4px 12px rgba(0,0,0,0.08);" />'
                                 f'</div>',
                                 unsafe_allow_html=True,
                             )
