@@ -7,6 +7,7 @@ import base64
 import os
 import urllib.parse
 import google.generativeai as genai
+import zoneifo
 
 # ==========================================
 # 1. 페이지 설정 및 프리미엄 클린 디자인 CSS
