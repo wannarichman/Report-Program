@@ -3,6 +3,7 @@ import streamlit.components.v1 as components
 import json
 import time
 import base64
+import os  # 로컬 이미지 파일 참조를 위해 추가
 
 # ==========================================
 # 1. 페이지 설정 및 프리미엄 클린 디자인 CSS
@@ -122,7 +123,7 @@ def get_sample_json_guide():
                         "side_items": [
                             {"type": "metric", "label": "진행률", "value": "0%", "color": "#007bff",
                              "label_fs": 14, "label_color": "#64748b", "value_fs": 34},
-                            {"type": "metric", "label": "핵심 일정", "value": "D-0: /nD-7: ", "color": "#0ea5e9",
+                            {"type": "metric", "label": "핵심 일정", "value": "D-0: \nD-7: ", "color": "#0ea5e9",
                              "label_fs": 14, "label_color": "#64748b", "value_fs": 22}
                         ]
                     }
@@ -147,7 +148,7 @@ def get_sample_json_guide():
                             {"text": "• 추가 설명(짧게)", "size": 20, "color": "#334155"}
                         ],
                         "side_items": [
-                            {"type": "metric", "label": "정량 지표", "value": "지표A: /n지표B: ", "color": "#16a34a",
+                            {"type": "metric", "label": "정량 지표", "value": "지표A: \n지표B: ", "color": "#16a34a",
                              "label_fs": 14, "label_color": "#64748b", "value_fs": 22}
                         ]
                     }
@@ -189,6 +190,24 @@ def adapt_json_format(raw_data):
             raw_data.update({"title": "AI 기반 보고 플랫폼", "title_fs": 55, "title_color": "#0f172a"})
         return raw_data
     return get_sample_json_guide()
+
+# [핵심 추가] 이미지 소스 자동 렌더링 헬퍼 (웹URL, Base64, 로컬파일 모두 지원)
+def render_image_src(img_val):
+    if not img_val: 
+        return ""
+    # 1. 이미 웹 URL이거나 Base64 인코딩된 데이터인 경우 그대로 반환
+    if img_val.startswith("http") or img_val.startswith("data:image"):
+        return img_val
+    # 2. 로컬 파일 경로인 경우 (예: "image.png") 동적으로 Base64 변환하여 반환 (JSON 용량 증가 방지)
+    if os.path.isfile(img_val):
+        try:
+            with open(img_val, "rb") as f:
+                ext = img_val.split('.')[-1].lower()
+                mime = "image/jpeg" if ext in ["jpg", "jpeg"] else f"image/{ext}"
+                return f"data:{mime};base64,{base64.b64encode(f.read()).decode()}"
+        except Exception as e:
+            return img_val
+    return img_val
 
 # ==========================================
 # 4. ID 식별 및 음성 시스템 (UID persistence 및 Heartbeat 보존)
@@ -368,9 +387,9 @@ def main_content_area(edit_enabled):
         return
 
     data = shared_store["report_data"]
-    cp_idx = shared_store["current_page"] # 현재 페이지 인덱스
+    cp_idx = shared_store["current_page"]
     
-    # --- [신규 추가] 6-3. 전체 문서 공통 제목 설정 및 렌더링 ---
+    # --- 6-3. 전체 문서 공통 제목 설정 및 렌더링 ---
     if edit_enabled:
         with st.expander("👑 전체 문서 공통 제목 설정", expanded=True):
             data['title'] = st.text_input("문서 전체 제목", data.get('title', ''), key="global_title_input")
@@ -378,7 +397,6 @@ def main_content_area(edit_enabled):
             data['title_fs'] = dtc1.slider("제목 글자 크기", 20, 120, int(data.get('title_fs', 55)))
             data['title_color'] = dtc2.color_picker("제목 색상", data.get('title_color', '#0f172a'))
 
-    # 모든 페이지 공통 제목 출력
     st.markdown(f'<h1 style="text-align:center; font-size:{data.get("title_fs", 55)}px; color:{data.get("title_color", "#0f172a")}; margin-bottom:10px;">{data.get("title", "")}</h1>', unsafe_allow_html=True)
     st.markdown("<hr style='margin-top:0; margin-bottom:40px; border:0; border-top:1px solid #eee;'>", unsafe_allow_html=True)
 
@@ -416,7 +434,7 @@ def main_content_area(edit_enabled):
 
     st.markdown(f'<h2 style="text-align:center; font-size:{p.get("header_fs", 35)}px; color:{p.get("header_color", "#475569")}; margin-bottom:30px;">{p.get("header", "")}</h2>', unsafe_allow_html=True)
 
-    # --- 6-6. 섹션 (블록) 루프 및 모든 편집 기능 (Key Collision 해결 완료) ---
+    # --- 6-6. 섹션 (블록) 루프 ---
     sections = p.setdefault('sections', [])
     if edit_enabled and st.button("➕ 새로운 세로 섹션 뭉치 추가", key=f"add_sec_btn_{cp_idx}"):
         sections.append({
@@ -430,7 +448,6 @@ def main_content_area(edit_enabled):
         with st.container(border=True): 
             if edit_enabled:
                 sc1, sc2, sc3, sc4, sc5 = st.columns([2.5, 0.8, 0.8, 1.2, 0.5])
-                # [중요] 모든 위젯 키에 cp_idx(현재 페이지 번호)를 포함하여 데이터 섞임 방지
                 sec['title'] = sc1.text_input("섹션 제목", sec.get('title', ''), key=f"st_t_{cp_idx}_{s_idx}")
                 sec['title_fs'] = sc2.number_input("크기", 10, 80, int(sec.get('title_fs', 32)), key=f"st_fs_{cp_idx}_{s_idx}")
                 sec['title_color'] = sc3.color_picker("색상", sec.get('title_color', '#1a1c1e'), key=f"st_c_{cp_idx}_{s_idx}")
@@ -441,18 +458,30 @@ def main_content_area(edit_enabled):
 
             col_main, col_side = st.columns([sec.get('col_ratio', 2.0), 1], gap="medium")
             
-            with col_main: # 좌측 영역: 그림 및 [줄 단위 본문 편집]
+            with col_main: 
+                # [핵심 수정] 좌측 메인 이미지 관리 (URL + 파일 업로드 하이브리드 지원)
                 if edit_enabled:
                     with st.expander("🖼️ 이미지 관리"):
-                        img_f = st.file_uploader(f"그림 업로드", type=['png', 'jpg'], key=f"simg_f_{cp_idx}_{s_idx}")
-                        if img_f: sec['main_image'] = f"data:image/png;base64,{base64.b64encode(img_f.getvalue()).decode()}"
+                        current_img = sec.get('main_image', '')
+                        # Base64 문자열이 너무 길어 텍스트박스를 멈추게 하는 현상 방지
+                        display_img_url = "" if current_img and current_img.startswith("data:image") else current_img
+                        
+                        new_img_url = st.text_input("웹 URL 또는 로컬 파일명 (예: image.jpg)", value=display_img_url, key=f"simg_url_{cp_idx}_{s_idx}")
+                        img_f = st.file_uploader("또는 PC 이미지 업로드 (직접 삽입)", type=['png', 'jpg', 'jpeg', 'gif'], key=f"simg_f_{cp_idx}_{s_idx}")
+                        
+                        if img_f: # 파일을 직접 업로드한 경우 Base64 인코딩
+                            sec['main_image'] = f"data:image/png;base64,{base64.b64encode(img_f.getvalue()).decode()}"
+                        elif new_img_url != display_img_url: # URL을 텍스트로 입력한 경우
+                            sec['main_image'] = new_img_url
+                            
                         sec['full_width'] = st.toggle("너비 꽉 채우기", value=sec.get('full_width', True), key=f"fw_{cp_idx}_{s_idx}")
                         if not sec['full_width']: sec['img_width'] = st.slider("수동 너비 조절", 100, 1200, int(sec.get('img_width', 750)), key=f"sw_{cp_idx}_{s_idx}")
                         if st.button("🗑️ 그림 삭제", key=f"simg_del_{cp_idx}_{s_idx}"): sec['main_image'] = None; st.rerun()
                 
                 if sec.get('main_image'): 
+                    final_src = render_image_src(sec['main_image'])
                     style = "width:100%;" if sec.get('full_width', True) else f"width:{sec.get('img_width', 750)}px; max-width:100%;"
-                    st.markdown(f'<div style="text-align:center;"><img src="{sec["main_image"]}" style="{style} border-radius:12px; margin-bottom:20px; box-shadow: 0 4px 12px rgba(0,0,0,0.05);" /></div>', unsafe_allow_html=True)
+                    st.markdown(f'<div style="text-align:center;"><img src="{final_src}" style="{style} border-radius:12px; margin-bottom:20px; box-shadow: 0 4px 12px rgba(0,0,0,0.05);" /></div>', unsafe_allow_html=True)
                 
                 sec.setdefault('lines', [])
                 if edit_enabled:
@@ -470,7 +499,7 @@ def main_content_area(edit_enabled):
                     for line in sec.get('lines', []):
                         st.markdown(f'<p class="text-line" style="font-size:{line["size"]}px; color:{line["color"]}; font-weight:bold;">{line["text"]}</p>', unsafe_allow_html=True)
 
-            with col_side: # 우측 영역: 지표 및 그림 추가
+            with col_side: 
                 sec.setdefault('side_items', [])
                 if edit_enabled:
                     sc1, sc2 = st.columns(2)
@@ -485,17 +514,30 @@ def main_content_area(edit_enabled):
                                 item['value'] = st.text_area("내용", item.get('value'), height=120, key=f"si_v_{cp_idx}_{s_idx}_{i_idx}")
                                 ic3, ic4 = st.columns(2); item['label_fs'] = ic3.number_input("라벨크기", 10, 60, int(item.get('label_fs', 14)), key=f"si_lfs_{cp_idx}_{s_idx}_{i_idx}"); item['label_color'] = ic4.color_picker("라벨색상", item.get('label_color', '#64748b'), key=f"si_lc_{cp_idx}_{s_idx}_{i_idx}")
                                 ic5, ic6 = st.columns(2); item['value_fs'] = ic5.number_input("내용크기", 10, 100, int(item.get('value_fs', 28)), key=f"si_vfs_{cp_idx}_{s_idx}_{i_idx}"); item['color'] = ic6.color_picker("내용색상", item.get('color', '#007bff'), key=f"si_vc_{cp_idx}_{s_idx}_{i_idx}")
+                            
+                            # [핵심 수정] 우측 사이드 이미지 관리 (URL + 파일 업로드 하이브리드 지원)
                             elif item['type'] == "image":
-                                siu = st.file_uploader("그림 업로드", key=f"si_iu_{cp_idx}_{s_idx}_{i_idx}")
-                                if siu: item['src'] = f"data:image/png;base64,{base64.b64encode(siu.getvalue()).decode()}"
+                                current_side = item.get('src', '')
+                                display_side = "" if current_side and current_side.startswith("data:image") else current_side
+                                
+                                new_side_url = st.text_input("URL/로컬 파일명", value=display_side, key=f"si_url_{cp_idx}_{s_idx}_{i_idx}")
+                                siu = st.file_uploader("그림 업로드", type=['png', 'jpg', 'jpeg', 'gif'], key=f"si_iu_{cp_idx}_{s_idx}_{i_idx}")
+                                
+                                if siu: 
+                                    item['src'] = f"data:image/png;base64,{base64.b64encode(siu.getvalue()).decode()}"
+                                elif new_side_url != display_side:
+                                    item['src'] = new_side_url
+                                    
                                 item['width'] = st.slider("너비", 100, 500, int(item.get('width', 350)), key=f"si_iw_{cp_idx}_{s_idx}_{i_idx}")
+                            
                             if st.button("🗑️ 삭제", key=f"si_del_{cp_idx}_{s_idx}_{i_idx}"): sec['side_items'].pop(i_idx); st.rerun()
                     
                     if item['type'] == "metric":
                         fv = item.get('value', '').replace('\n', '<br>')
                         st.markdown(f'<div class="side-slot-card"><div style="font-size:{item.get("label_fs", 14)}px; color:{item.get("label_color", "#64748b")}; margin-bottom:8px;">{item.get("label", "")}</div><div style="font-size:{item.get("value_fs", 28)}px; font-weight:bold; color:{item.get("color", "#007bff")}; line-height:1.5;">{fv}</div></div>', unsafe_allow_html=True)
                     elif item['type'] == "image" and item.get('src'):
-                        st.markdown(f'<div class="side-slot-card"><img src="{item["src"]}" style="width:{item.get("width", 350)}px; max-width:100%; border-radius:12px; box-shadow: 0 4px 12px rgba(0,0,0,0.08);" /></div>', unsafe_allow_html=True)
+                        final_side_src = render_image_src(item['src'])
+                        st.markdown(f'<div class="side-slot-card"><img src="{final_side_src}" style="width:{item.get("width", 350)}px; max-width:100%; border-radius:12px; box-shadow: 0 4px 12px rgba(0,0,0,0.08);" /></div>', unsafe_allow_html=True)
 
 # 실행
 main_content_area(edit_mode)
