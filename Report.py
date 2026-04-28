@@ -97,27 +97,87 @@ shared_store = get_global_store()
 # ==========================================
 def get_sample_json_guide():
     return {
-        "title": "전체 보고서 공통 제목",    # [추가] 리포트 전체 제목
-        "title_fs": 55,                     # [추가] 전체 제목 크기
-        "title_color": "#0f172a",           # [추가] 전체 제목 색상
-        "pages": [{
-            "tab": "샘플 페이지",
-            "header": "여기에 페이지별 소제목 입력",
-            "header_fs": 35,
-            "header_color": "#475569",
-            "sections": [{
-                "title": "섹션 제목",
-                "title_fs": 32,
-                "title_color": "#1a1c1e",
-                "col_ratio": 2.0,
-                "main_image": None,
-                "full_width": True,
-                "lines": [{"text": "여기에 본문 내용을 입력하세요.", "size": 22, "color": "#1e293b"}],
-                "side_items": [
-                    {"type": "metric", "label": "지표명", "value": "수치", "color": "#007bff", "label_fs": 14, "label_color": "#64748b", "value_fs": 28}
+        "title": "주간 보고",
+        "title_fs": 55,
+        "title_color": "#0f172a",
+        "pages": [
+            {
+                "tab": "P1. 요약",
+                "header": "Executive Summary",
+                "header_fs": 35,
+                "header_color": "#475569",
+                "sections": [
+                    {
+                        "title": "핵심 요약 (텍스트만 채워도 예쁨)",
+                        "title_fs": 32,
+                        "title_color": "#1a1c1e",
+                        "col_ratio": 1.5,
+                        "main_image": None,
+                        "full_width": True,
+                        "lines": [
+                            {"text": "• 금주 핵심 성과 1", "size": 24, "color": "#1e293b"},
+                            {"text": "• 금주 핵심 성과 2", "size": 22, "color": "#1e293b"},
+                            {"text": "• 주요 이슈/리스크 1", "size": 22, "color": "#1e293b"}
+                        ],
+                        "side_items": [
+                            {"type": "metric", "label": "진행률", "value": "0%", "color": "#007bff",
+                             "label_fs": 14, "label_color": "#64748b", "value_fs": 34},
+                            {"type": "metric", "label": "핵심 일정", "value": "D-0: /nD-7: ", "color": "#0ea5e9",
+                             "label_fs": 14, "label_color": "#64748b", "value_fs": 22}
+                        ]
+                    }
                 ]
-            }]
-        }]
+            },
+            {
+                "tab": "P2. 상세 (이미지+설명)",
+                "header": "현황 상세",
+                "header_fs": 35,
+                "header_color": "#475569",
+                "sections": [
+                    {
+                        "title": "현장/도면/차트 (이미지 업로드 권장)",
+                        "title_fs": 32,
+                        "title_color": "#1a1c1e",
+                        "col_ratio": 1.5,
+                        "main_image": None,
+                        "full_width": True,
+                        "lines": [
+                            {"text": "• 이미지에서 봐야 할 포인트 1", "size": 22, "color": "#1e293b"},
+                            {"text": "• 이미지에서 봐야 할 포인트 2", "size": 22, "color": "#1e293b"},
+                            {"text": "• 추가 설명(짧게)", "size": 20, "color": "#334155"}
+                        ],
+                        "side_items": [
+                            {"type": "metric", "label": "정량 지표", "value": "지표A: /n지표B: ", "color": "#16a34a",
+                             "label_fs": 14, "label_color": "#64748b", "value_fs": 22}
+                        ]
+                    }
+                ]
+            },
+            {
+                "tab": "P3. 액션/리스크",
+                "header": "Action Items & Risks",
+                "header_fs": 35,
+                "header_color": "#475569",
+                "sections": [
+                    {
+                        "title": "이번 주 Action Items",
+                        "title_fs": 32,
+                        "title_color": "#1a1c1e",
+                        "col_ratio": 1.5,
+                        "main_image": None,
+                        "full_width": True,
+                        "lines": [
+                            {"text": "1) [담당/기한] 할 일", "size": 22, "color": "#1e293b"},
+                            {"text": "2) [담당/기한] 할 일", "size": 22, "color": "#1e293b"}
+                        ],
+                        "side_items": [
+                            {"type": "metric", "label": "Blocker", "value": "없음", "color": "#dc2626",
+                             "label_fs": 14, "label_color": "#64748b", "value_fs": 26}
+                        ]
+                    }
+                ]
+            }
+        ]
     }
 
 def create_empty_page():
