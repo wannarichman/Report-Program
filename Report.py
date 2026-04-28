@@ -10,6 +10,79 @@ import requests
 import google.generativeai as genai
 from datetime import datetime
 import zoneinfo
+import re
+from io import BytesIO
+
+try:
+    from pypdf import PdfReader
+    _HAS_PYPDF = True
+except Exception:
+    _HAS_PYPDF = False
+
+MAX_DOC_CHARS = 30000  # 무료 모델 토큰 보호용
+
+
+def extract_text_from_upload(uploaded_file):
+    """
+    Streamlit UploadedFile -> 평문 텍스트.
+    지원: txt, md, csv, pdf. 그 외는 utf-8 디코드 시도.
+    """
+    if uploaded_file is None:
+        return ""
+    name = (uploaded_file.name or "").lower()
+    raw = uploaded_file.getvalue()
+
+    # 1) PDF
+    if name.endswith(".pdf"):
+        if not _HAS_PYPDF:
+            return "[오류] pypdf가 설치되지 않았습니다. requirements.txt에 pypdf>=4.0.0 추가 필요."
+        try:
+            reader = PdfReader(BytesIO(raw))
+            pages_text = []
+            for i, page in enumerate(reader.pages):
+                try:
+                    t = page.extract_text() or ""
+                except Exception:
+                    t = ""
+                if t.strip():
+                    pages_text.append(f"--- [PDF p.{i+1}] ---\n{t.strip()}")
+            full = "\n\n".join(pages_text).strip()
+            if not full:
+                return "[알림] PDF에서 텍스트를 추출하지 못했습니다(스캔본/이미지 PDF로 추정). OCR 처리가 필요합니다."
+            return full[:MAX_DOC_CHARS]
+        except Exception as e:
+            return f"[PDF 파싱 오류] {e}"
+
+    # 2) CSV/TXT/MD/기타 텍스트
+    try:
+        text = raw.decode("utf-8", errors="ignore")
+    except Exception:
+        text = str(raw)
+    return text[:MAX_DOC_CHARS]
+
+
+def extract_requested_page_count(text):
+    """
+    사용자 입력에서 'N페이지', 'N장', 'N pages' 패턴을 찾아 정수 반환. 없으면 None.
+    """
+    if not text:
+        return None
+    patterns = [
+        r"(\d+)\s*페이지",
+        r"(\d+)\s*장(?:으로|짜리|분량)?",
+        r"(\d+)\s*pages?",
+        r"페이지\s*수\s*(?:는|=|:)\s*(\d+)",
+    ]
+    for p in patterns:
+        m = re.search(p, text, re.IGNORECASE)
+        if m:
+            try:
+                n = int(m.group(1))
+                if 1 <= n <= 12:  # 합리적 범위
+                    return n
+            except Exception:
+                continue
+    return None
 
 # ==========================================
 # 1. 페이지 설정 및 CSS
@@ -693,28 +766,43 @@ with st.sidebar:
             except Exception:
                 ai_api_key = ""
                 st.warning("GEMINI_API_KEY 설정 필요")
-            ai_text_input = st.text_area("텍스트 데이터 입력")
-            ai_file_input = st.file_uploader("또는 문서 업로드", type=["txt", "csv", "md"])
-            if st.button("AI 보고서 생성", use_container_width=True):
-                if not ai_api_key:
-                    st.error("API Key 필요")
-                else:
-                    context = ai_text_input
-                    if ai_file_input:
-                        context += f"\n\n[문서 내용]\n{ai_file_input.getvalue().decode('utf-8')}"
-                    if not context.strip():
-                        st.error("텍스트나 문서를 입력해주세요.")
-                    else:
-                        with st.spinner("생성 중..."):
-                            ai_result = generate_json_from_ai(ai_api_key, context)
-                        if "error" in ai_result:
-                            st.error(f"생성 실패: {ai_result['error']}")
-                        else:
-                            shared_store["report_data"] = adapt_json_format(ai_result)
-                            shared_store["current_page"] = 0
-                            st.success("완료!")
-                            time.sleep(1)
-                            st.rerun()
+ai_text_input = st.text_area(
+    "텍스트 데이터 입력 (예: '5페이지로 안전 보고서 만들어줘. ...')"
+)
+ai_file_input = st.file_uploader(
+    "또는 문서 업로드 (PDF / TXT / CSV / MD)",
+    type=["pdf", "txt", "csv", "md"],  # ← pdf 추가
+)
+
+if st.button("AI 보고서 생성", use_container_width=True):
+    if not ai_api_key:
+        st.error("API Key 필요")
+    else:
+        context = ai_text_input or ""
+        if ai_file_input:
+            doc_text = extract_text_from_upload(ai_file_input)
+            context += f"\n\n[첨부 문서: {ai_file_input.name}]\n{doc_text}"
+
+        if not context.strip():
+            st.error("텍스트나 문서를 입력해주세요.")
+        else:
+            # 사용자 지시에서 페이지 수 추출
+            req_pages = extract_requested_page_count(ai_text_input)
+            with st.spinner(
+                f"생성 중..."
+                + (f" ({req_pages}페이지로)" if req_pages else "")
+            ):
+                ai_result = generate_json_from_ai(
+                    ai_api_key, context, requested_pages=req_pages
+                )
+            if "error" in ai_result:
+                st.error(f"생성 실패: {ai_result['error']}")
+            else:
+                shared_store["report_data"] = adapt_json_format(ai_result)
+                shared_store["current_page"] = 0
+                st.success("완료!")
+                time.sleep(1)
+                st.rerun()
 
         st.write("---")
         st.download_button("표준 양식 다운로드",
