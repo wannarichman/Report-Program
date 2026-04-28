@@ -7,7 +7,8 @@ import base64
 import os
 import urllib.parse
 import google.generativeai as genai
-import zoneifo
+from datetime import datetime
+import zoneinfo
 
 # ==========================================
 # 1. 페이지 설정 및 프리미엄 클린 디자인 CSS
@@ -243,20 +244,20 @@ def generate_json_from_ai(api_key, context_text):
     try:
         genai.configure(api_key=api_key)
 
-        # ✅ 현재 API 키로 실제 호출 가능한 모델 목록을 동적으로 조회
+        # 현재 API 키로 실제 호출 가능한 모델 목록을 동적으로 조회
         try:
             available = []
             for m in genai.list_models():
                 methods = getattr(m, "supported_generation_methods", []) or []
                 if "generateContent" in methods:
-                    available.append(m.name)  # 예: "models/gemini-2.5-flash"
+                    available.append(m.name)
         except Exception as e:
             return {"error": f"모델 목록 조회 실패 (SDK 또는 API Key 문제 가능성): {e}"}
 
         if not available:
             return {"error": "이 API 키로 generateContent 가능한 모델이 없습니다. AI Studio에서 키를 다시 발급받아 주세요."}
 
-        # 선호 순위 (있으면 먼저 사용, 없으면 다음 후보로)
+        # 선호 순위
         preferred_order = [
             "gemini-2.5-flash",
             "gemini-2.0-flash",
@@ -280,7 +281,6 @@ def generate_json_from_ai(api_key, context_text):
 
         chosen_model = pick_model(available)
 
-        # ===== ⬇️ 여기서부터 system_prompt 부분만 새로 작성 ⬇️ =====
         # 현재 한국 시간 주입
         now_kst = datetime.now(zoneinfo.ZoneInfo("Asia/Seoul"))
         today_str = now_kst.strftime("%Y년 %m월 %d일")
@@ -298,13 +298,70 @@ def generate_json_from_ai(api_key, context_text):
 - 절대로 과거 연도(예: 2024년, 2025년)를 "현재"나 "다가오는"으로 표현하지 마세요.
 - 입력 데이터에 연도 표기가 없으면 모두 {year_str}년 기준으로 해석하세요.
 
-[JSON 출력 스키마 — 구조(필드 이름)만 따르고, 페이지 수/섹션 수/탭명은 자유]
+[JSON 출력 스키마 — 필드 이름만 참고하고, 페이지 수/섹션 수/탭명은 자유]
 {json.dumps(get_sample_json_guide(), ensure_ascii=False)}
 
 [작성 지침]
 1. 위 표준 양식은 "필드 구조 참고용"일 뿐입니다. 페이지 개수, 탭 이름, 섹션 구성, 메트릭 항목은
    입력 데이터의 성격과 분량에 가장 적합하게 자유롭게 설계하세요.
-   (예: 단순 회의록은 1~2페이지, 분기보고는 4
+   (예: 단순 회의록은 1~2페이지, 분기보고는 4~5페이지 등 유연하게)
+2. 각 페이지의 tab/header는 입력 데이터의 핵심 주제를 반영해 의미있게 작명하세요.
+3. lines, side_items(metric), chart_data 는 입력 데이터에서 추출한 실제 정보로 채우세요.
+   추측이나 가짜 수치를 넣지 마세요. 정보가 없으면 해당 필드는 비우거나 생략하세요.
+4. chart_data 는 수치 데이터가 실제로 있을 때만 "항목, 수치\\n항목, 수치" 형태로 작성합니다.
+5. [매우 중요] image_query 필드:
+   - 반드시 영어 단어 1~3개로 작성하세요. (한글 절대 금지)
+   - 섹션 내용과 직접 관련된 사물/장면을 지칭하는 구체적 명사 위주.
+   - 예시: 안전 교육 → "safety training, helmet" / 매출 분석 → "sales chart, business analytics"
+            건설 현장 → "construction site, crane" / 회의 → "business meeting, conference"
+   - "report", "summary", "data" 같은 추상적 단어는 금지.
+6. 마크다운 코드블록 없이 오직 파싱 가능한 순수 JSON 문자열만 출력하세요.
+
+[입력 데이터]
+{context_text}
+"""
+
+        generation_config = {
+            "response_mime_type": "application/json",
+            "temperature": 0.4,
+        }
+
+        # 선택한 모델로 호출 (실패 시 나머지 후보로 fallback)
+        tried = []
+        last_error = None
+        candidates = [chosen_model] + [n for n in available if n != chosen_model]
+
+        response = None
+        for model_name in candidates:
+            try:
+                model = genai.GenerativeModel(
+                    model_name,
+                    generation_config=generation_config,
+                )
+                response = model.generate_content(system_prompt)
+                break
+            except Exception as e:
+                tried.append(f"{model_name}: {e}")
+                last_error = e
+                continue
+
+        if response is None:
+            return {"error": f"모든 모델 호출 실패. 시도 내역: {tried}"}
+
+        clean_text = (response.text or "").strip()
+
+        # ```json ... ``` 코드블록이 섞여 있을 경우 안전 제거
+        if clean_text.startswith("```"):
+            clean_text = clean_text.split("\n", 1)[1] if "\n" in clean_text else clean_text[3:]
+        if clean_text.endswith("```"):
+            clean_text = clean_text[:-3]
+        clean_text = clean_text.strip()
+
+        parsed_json = json.loads(clean_text)
+        return parsed_json
+
+    except Exception as e:
+        return {"error": str(e)}
         
 # ==========================================
 # 4. ID 식별 및 음성 시스템 
