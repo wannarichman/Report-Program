@@ -315,25 +315,59 @@ def auto_place_photos(report, images):
 # ==========================================
 st.set_page_config(page_title="AI Live Sync Master Builder", layout="wide")
 
-st.markdown("""
-<style>
-[data-testid="stAppViewContainer"] { background-color: #ffffff !important; }
-.main [data-testid="stVerticalBlockBorderWrapper"] {
-    background-color: #ffffff !important; border: 1px solid #dee2e6 !important;
-    border-radius: 16px !important; padding: 35px 40px !important;
-    box-shadow: 0 4px 16px rgba(0,0,0,0.04) !important; margin-bottom: 50px !important;
-}
-[data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"] {
-    border: 1px solid #dee2e6 !important; padding: 15px !important;
-    box-shadow: none !important; margin-bottom: 10px !important;
-}
-.side-slot-card { padding: 10px 0px; margin-bottom: 16px; }
-.text-line { white-space: pre-wrap; word-wrap: break-word; line-height: 1.8; margin-bottom: 10px; color: #334155; }
-.voice-panel { background:#fff; border:1px solid #dee2e6; padding:15px; border-radius:16px; text-align:center; margin-bottom:15px; }
-.btn-mute { padding:8px 16px; background:#6c757d; color:#fff; border:none; border-radius:8px; cursor:pointer; font-weight:bold; width:100%; }
-.btn-mute.active { background:#dc3545; }
-</style>
-""", unsafe_allow_html=True)
+st.markdown(
+    """
+    <style>
+    [data-testid="stAppViewContainer"] { background-color: #ffffff !important; }
+    .main [data-testid="stVerticalBlockBorderWrapper"] {
+        background-color: #ffffff !important; border: 1px solid #dee2e6 !important;
+        border-radius: 16px !important; padding: 35px 40px !important;
+        box-shadow: 0 4px 16px rgba(0,0,0,0.04) !important; margin-bottom: 50px !important;
+    }
+    [data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"] {
+        border: 1px solid #dee2e6 !important; padding: 15px !important;
+        box-shadow: none !important; margin-bottom: 10px !important;
+    }
+    .side-slot-card { padding: 10px 0px; margin-bottom: 16px; }
+    .text-line { white-space: pre-wrap; word-wrap: break-word; line-height: 1.8; margin-bottom: 10px; color: #334155; }
+    .voice-panel { background:#fff; border:1px solid #dee2e6; padding:15px; border-radius:16px; text-align:center; margin-bottom:15px; }
+    .btn-mute { padding:8px 16px; background:#6c757d; color:#fff; border:none; border-radius:8px; cursor:pointer; font-weight:bold; width:100%; }
+    .btn-mute.active { background:#dc3545; }
+    
+    /* ★ v6 추가: 한 화면 최적화 로직 (이미지 viewport 측) */
+    .report-main-image-wrap {
+        text-align: center;
+        margin-bottom: 16px;
+    }
+    .report-main-image {
+        width: auto;
+        height: auto;
+        max-width: 100%;
+        max-height: 52vh;
+        object-fit: contain;
+        border-radius: 12px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.06);
+        background: #f8fafc;
+    }
+    @media (max-width: 768px) {
+        .report-main-image { max-height: 36vh; }
+    }
+    .report-side-image {
+        width: 100%;
+        max-width: 350px;
+        max-height: 38vh;
+        object-fit: contain;
+        border-radius: 12px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+        background: #f8fafc;
+    }
+    @media (max-width: 768px) {
+        .report-side-image { max-height: 28vh; }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 # ==========================================
@@ -358,7 +392,7 @@ def get_sample_json_guide():
         "title": "주간 보고 (AI 생성 기반)", "title_fs": 55, "title_color": "#0f172a",
         "pages": [
             {"tab": "요약", "header": "Executive Summary", "header_fs": 35, "header_color": "#475569",
-             "sections": [{"title": "핵심 요약", "title_fs": 32, "title_color": "#1a1c1e", "col_ratio": 1.5,
+             "sections": [{"title": "핵 요약", "title_fs": 32, "title_color": "#1a1c1e", "col_ratio": 1.5,
                            "main_image": None, "full_width": True, "image_query": "",
                            "chart_type": "Bar", "chart_data": "",
                            "lines": [{"text": "• 금주 핵심 성과를 요약합니다.", "size": 24, "color": "#1e293b"},
@@ -1267,7 +1301,10 @@ def main_content_area(edit_enabled):
                     if final_src:
                         style = "width:100%;" if sec.get("full_width", True) else f"width:{sec.get('img_width', 750)}px; max-width:100%;"
                         st.markdown(
-                            f'<div style="text-align:center;"><img src="{final_src}" onerror="this.onerror=null; this.src={SQ}{ERROR_IMG}{SQ};" style="{style} border-radius:12px; margin-bottom:20px; box-shadow:0 4px 12px rgba(0,0,0,0.05);" /></div>',
+                            f'<div class="report-main-image-wrap">'
+                            f'<img src="{final_src}" class="report-main-image" '
+                            f'onerror="this.onerror=null; this.src={SQ}{ERROR_IMG}{SQ};" />'
+                            f'</div>',
                             unsafe_allow_html=True,
                         )
 
@@ -1381,7 +1418,8 @@ def main_content_area(edit_enabled):
                             if final_side_src:
                                 st.markdown(
                                     f'<div class="side-slot-card">'
-                                    f'<img src="{final_side_src}" onerror="this.onerror=null; this.src={SQ}{ERROR_IMG}{SQ};" style="width:{item.get("width", 350)}px; max-width:100%; border-radius:12px; box-shadow:0 4px 12px rgba(0,0,0,0.08);" />'
+                                    f'<img src="{final_side_src}" class="report-side-image" '
+                                    f'onerror="this.onerror=null; this.src={SQ}{ERROR_IMG}{SQ};" />'
                                     f'</div>',
                                     unsafe_allow_html=True,
                                 )
