@@ -20,13 +20,6 @@ import struct
 import zipfile
 import xml.etree.ElementTree as ET
 from io import BytesIO
-
-try:
-    from PIL import Image
-    HAS_PIL = True
-except Exception:
-    HAS_PIL = False
-    
 from pathlib import Path
 
 try:
@@ -44,74 +37,6 @@ ERROR_IMG = "https://placehold.co/800x400/f8fafc/94a3b8?text=Image+Not+Found"
 # ==========================================
 # 0. 유틸
 # ==========================================
-
-def _repair_json(s):
-    """Gemini가 가끔 백틱·작은따옴표로 JSON을 주면 자동 복구.
-    1) 트레일링 콤마 제거
-    2) 백틱 래핑 (`x`) → 큰따옴표 ("x") — 키·값 모두
-    3) 작은따옴표 키 ('x':) → 큰따옴표 키 ("x":)
-    """
-    if not s:
-        return s
-    # 1) 트레일링 콤마 제거
-    s = re.sub(r",\s*([\]\}])", r"\1", s)
-    # 2) 백틱 래핑 → 큰따옴표 (멀티라인 투어든고 안에 줄바꿈이 없다고 가정)
-    s = re.sub(r"`([^`\n]*?)`", r'"\1"', s)
-    # 3) 작은따옴표 키 → 큰따옴표 키
-    s = re.sub(r"'([^'\n]*?)'(\s*:)", r'"\1"\2', s)
-    return s
-
-
-def extract_json(text):
-    """모델 응답에서 JSON 객체 부분만 견고하게 추출.
-    - 앞뒤 평문·설명, 마크다운 코드 펜스 제거
-    - 처음 '{' 부터 짝 맞는 '}' 까지만 추출
-    """
-    if not text:
-        return None
-    s = text.strip()
-    # 1) 마크다운 코드 펜스 감싸고 있으면 제거
-    if s.startswith("```"):
-        s = s.lstrip("`")
-        nl = s.find("\n")
-        if nl > 0 and s[:nl].strip().lower() in ("json", ""):
-            s = s[nl + 1:]
-        if s.rstrip().endswith("```"):
-            s = s.rstrip()[:-3]
-        s = s.strip()
-    # 2) 처음 여는 괄호 위치
-    start = s.find("{")
-    if start == -1:
-        return None
-    # 3) 대응하는 닫는 괄호 찾기 (문자열·이스케이프 인식)
-    depth = 0
-    in_str = False
-    esc = False
-    end = -1
-    for i in range(start, len(s)):
-        ch = s[i]
-        if esc:
-            esc = False
-            continue
-        if ch == "\\":
-            esc = True
-            continue
-        if ch == '"':
-            in_str = not in_str
-            continue
-        if in_str:
-            continue
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                end = i + 1
-                break
-    if end == -1:
-        return None
-    return s[start:end]
-
 def _strip_code_fence(text):
     t = (text or "").strip()
     fence = "`" * 3
@@ -332,110 +257,29 @@ def extract_text_from_upload(uploaded_file):
 
 
 # ==========================================
-# 0-2. 이미지 업로드 처리 (직접 배치)
-# ==========================================
-def load_uploaded_images(files):
-    """Streamlit UploadedFile 리스트 → base64 data URL 리스트."""
-    out = []
-    if not files:
-        return out
-    for idx, f in enumerate(files):
-        try:
-            raw = f.getvalue()
-            if not raw:
-                continue
-            mime = (getattr(f, "type", "") or "").lower()
-            if not mime.startswith("image/"):
-                ext = (f.name or "").lower().split(".")[-1]
-                mime = "image/jpeg" if ext in ("jpg", "jpeg") else f"image/{ext or 'jpeg'}"
-            b64 = base64.b64encode(raw).decode()
-            out.append({
-                "index": idx,
-                "name": f.name or f"photo_{idx}",
-                "data_url": f"data:{mime};base64,{b64}",
-            })
-        except Exception:
-            continue
-    return out
-
-
-def auto_place_photos(report, images):
-    """업로드된 사진을 보고서 첫 N개 섹션의 main_image에 순서대로 강제 배치."""
-    if not images or not isinstance(report, dict):
-        return report
-    flat = []
-    for pg in report.get("pages", []) or []:
-        for sec in pg.get("sections", []) or []:
-            flat.append(sec)
-    if not flat:
-        return report
-    for i, im in enumerate(images):
-        if i >= len(flat):
-            break
-        sec = flat[i]
-        sec["main_image"] = im["data_url"]
-        sec["image_query"] = ""  # 자동 검색 폴백 차단
-        sec["full_width"] = True
-    return report
-
-# ==========================================
 # 1. 페이지 설정 및 CSS
 # ==========================================
 st.set_page_config(page_title="AI Live Sync Master Builder", layout="wide")
 
-st.markdown(
-    """
-    <style>
-    [data-testid="stAppViewContainer"] { background-color: #ffffff !important; }
-    .main [data-testid="stVerticalBlockBorderWrapper"] {
-        background-color: #ffffff !important; border: 1px solid #dee2e6 !important;
-        border-radius: 16px !important; padding: 35px 40px !important;
-        box-shadow: 0 4px 16px rgba(0,0,0,0.04) !important; margin-bottom: 50px !important;
-    }
-    [data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"] {
-        border: 1px solid #dee2e6 !important; padding: 15px !important;
-        box-shadow: none !important; margin-bottom: 10px !important;
-    }
-    .side-slot-card { padding: 10px 0px; margin-bottom: 16px; }
-    .text-line { white-space: pre-wrap; word-wrap: break-word; line-height: 1.8; margin-bottom: 10px; color: #334155; }
-    .voice-panel { background:#fff; border:1px solid #dee2e6; padding:15px; border-radius:16px; text-align:center; margin-bottom:15px; }
-    .btn-mute { padding:8px 16px; background:#6c757d; color:#fff; border:none; border-radius:8px; cursor:pointer; font-weight:bold; width:100%; }
-    .btn-mute.active { background:#dc3545; }
-    
-    /* ★ v6 추가: 한 화면 최적화 로직 (이미지 viewport 측) */
-    .report-main-image-wrap {
-        text-align: center;
-        margin-bottom: 16px;
-    }
-    .report-main-image {
-        width: auto;
-        height: auto;
-        max-width: 100%;
-        max-height: 52vh;
-        object-fit: contain;
-        border-radius: 12px;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.06);
-        background: #f8fafc;
-    }
-    @media (max-width: 768px) {
-        .report-main-image { max-height: 36vh; }
-    }
-    .report-side-image {
-        width: 100%;
-        max-width: 350px;
-        max-height: 38vh;
-        object-fit: contain;
-        border-radius: 12px;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.08);
-        background: #f8fafc;
-    }
-    @media (max-width: 768px) {
-        .report-side-image { max-height: 28vh; }
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+st.markdown("""
+<style>
+[data-testid="stAppViewContainer"] { background-color: #ffffff !important; }
+.main [data-testid="stVerticalBlockBorderWrapper"] {
+    background-color: #ffffff !important; border: 1px solid #dee2e6 !important;
+    border-radius: 16px !important; padding: 35px 40px !important;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.04) !important; margin-bottom: 50px !important;
+}
+[data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"] {
+    border: 1px solid #dee2e6 !important; padding: 15px !important;
+    box-shadow: none !important; margin-bottom: 10px !important;
+}
+.side-slot-card { padding: 10px 0px; margin-bottom: 16px; }
+.text-line { white-space: pre-wrap; word-wrap: break-word; line-height: 1.8; margin-bottom: 10px; color: #334155; }
+.voice-panel { background:#fff; border:1px solid #dee2e6; padding:15px; border-radius:16px; text-align:center; margin-bottom:15px; }
+.btn-mute { padding:8px 16px; background:#6c757d; color:#fff; border:none; border-radius:8px; cursor:pointer; font-weight:bold; width:100%; }
+.btn-mute.active { background:#dc3545; }
+</style>
+""", unsafe_allow_html=True)
 
 
 # ==========================================
@@ -460,7 +304,7 @@ def get_sample_json_guide():
         "title": "주간 보고 (AI 생성 기반)", "title_fs": 55, "title_color": "#0f172a",
         "pages": [
             {"tab": "요약", "header": "Executive Summary", "header_fs": 35, "header_color": "#475569",
-             "sections": [{"title": "핵 요약", "title_fs": 32, "title_color": "#1a1c1e", "col_ratio": 1.5,
+             "sections": [{"title": "핵심 요약", "title_fs": 32, "title_color": "#1a1c1e", "col_ratio": 1.5,
                            "main_image": None, "full_width": True, "image_query": "",
                            "chart_type": "Bar", "chart_data": "",
                            "lines": [{"text": "• 금주 핵심 성과를 요약합니다.", "size": 24, "color": "#1e293b"},
@@ -565,60 +409,45 @@ def adapt_json_format(raw_data):
 # ==========================================
 # 4. 외부 정보 수집 (네이버 검색)  ★ v3 (A) 강화
 # ==========================================
-@st.cache_data(ttl=600, show_spinner=False)
 def naver_search_text(query, max_results=5):
-    """뉴스(최신순) + 백과 + 웹 멀티 소스 통합 그라운딩.
-    - 3개 엔드포인트를 ThreadPoolExecutor로 병렬 호출
-    - 타임아웃 3초로 단축
-    - 결과는 10분 캐싱 (동일 쿼리 재호출 시 즉시 반환)
-    """
+    """뉴스(최신순) + 백과 + 웹 멀티 소스 통합 그라운딩."""
     try:
         cid = st.secrets.get("NAVER_CLIENT_ID", "")
         csec = st.secrets.get("NAVER_CLIENT_SECRET", "")
         if not cid or not csec:
             return ""
         headers = {"X-Naver-Client-Id": cid, "X-Naver-Client-Secret": csec}
+        snippets = []
         endpoints = [
             ("news.json", {"sort": "date"}),
             ("encyc.json", {"sort": "sim"}),
             ("webkr.json", {"sort": "sim"}),
         ]
-
-        def _fetch(endpoint, extra):
+        for endpoint, extra in endpoints:
             try:
                 params = {"query": query, "display": max_results}
                 params.update(extra)
                 r = requests.get(
                     "https://openapi.naver.com/v1/search/" + endpoint,
-                    params=params, headers=headers, timeout=3,
+                    params=params, headers=headers, timeout=5,
                 )
-                if r.status_code != 200:
-                    return []
-                out = []
-                tag = endpoint.split(".")[0]
-                for item in r.json().get("items", []):
-                    title = re.sub(r"<[^>]+>", "", item.get("title", ""))
-                    desc = re.sub(r"<[^>]+>", "", item.get("description", ""))
-                    link = item.get("link", "")
-                    pub = item.get("pubDate", "")
-                    out.append(f"- [{tag}/{pub}] {title}: {desc} (출처: {link})")
-                return out
+                if r.status_code == 200:
+                    for item in r.json().get("items", []):
+                        title = re.sub(r"<[^>]+>", "", item.get("title", ""))
+                        desc = re.sub(r"<[^>]+>", "", item.get("description", ""))
+                        link = item.get("link", "")
+                        pub = item.get("pubDate", "")
+                        tag = endpoint.split(".")[0]
+                        snippets.append(f"- [{tag}/{pub}] {title}: {desc} (출처: {link})")
             except Exception:
-                return []
-
-        from concurrent.futures import ThreadPoolExecutor
-        snippets = []
-        with ThreadPoolExecutor(max_workers=3) as ex:
-            for chunk in ex.map(lambda args: _fetch(*args), endpoints):
-                snippets.extend(chunk)
+                continue
         return "\n".join(snippets[:20])
     except Exception:
         return ""
 
 
-@st.cache_data(ttl=600, show_spinner=False)
 def naver_search_image(query):
-    """이미지 검색도 캐싱 (동일 쿼리 즉시 반환)."""
+    """★ v3 (C2): query 핵심어가 결과 제목에 포함된 이미지를 우선 채택. 없으면 1순위 폴백."""
     try:
         cid = st.secrets.get("NAVER_CLIENT_ID", "")
         csec = st.secrets.get("NAVER_CLIENT_SECRET", "")
@@ -628,7 +457,7 @@ def naver_search_image(query):
             "https://openapi.naver.com/v1/search/image",
             params={"query": query, "display": 10, "sort": "sim", "filter": "large"},
             headers={"X-Naver-Client-Id": cid, "X-Naver-Client-Secret": csec},
-            timeout=3,
+            timeout=5,
         )
         if r.status_code != 200:
             return ""
@@ -656,9 +485,7 @@ def get_auto_image_url(query, w=1600, h=900):
         return naver_url
     tags = ",".join([urllib.parse.quote(t.strip()) for t in q.split(",") if t.strip()])
     lock = abs(hash(q)) % 100000
-    # ★ v6 수정: 불필요한 { } 괄호 제거 (broken image 원인 제거)
-    base = "https://loremflickr.com/"
-    return base + str(w) + "/" + str(h) + "/" + tags + "?lock=" + str(lock)
+    return f"https://loremflickr.com/{w}/{h}/{tags}?lock={lock}"
 
 
 def render_image_src(img_val):
@@ -666,11 +493,6 @@ def render_image_src(img_val):
         return ""
     val = img_val.strip()
     if not val:
-        return ""
-    # 깨진 URL 패턴 차단 (broken image 방지)
-    if val.startswith("UPLOADED:"):  # 구버전 잔존
-        return ""
-    if val.startswith("{") or val.startswith("}"):
         return ""
     if val.startswith("http://") or val.startswith("https://") or val.startswith("data:image"):
         return val
@@ -721,29 +543,17 @@ def format_facts_for_prompt(facts):
 # ==========================================
 # 5. AI 텍스트 -> JSON  ★ v3 (B + C1) 강화
 # ==========================================
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def _list_gemini_models(api_key):
-    """Gemini 모델 목록을 1시간 캐싱. 매 생성마다 재조회 방지."""
+def generate_json_from_ai(api_key, context_text, requested_pages=None):
     try:
         genai.configure(api_key=api_key)
-        out = []
-        for m in genai.list_models():
-            methods = getattr(m, "supported_generation_methods", []) or []
-            if "generateContent" in methods:
-                out.append(m.name)
-        return out
-    except Exception as e:
-        return {"error": f"모델 목록 조회 실패: {e}"}
-
-
-
-def generate_json_from_ai(api_key, context_text, requested_pages=None, n_attached_photos=0):
-    try:
-        genai.configure(api_key=api_key)
-        available = _list_gemini_models(api_key)
-        if isinstance(available, dict) and "error" in available:
-            return available
+        try:
+            available = []
+            for m in genai.list_models():
+                methods = getattr(m, "supported_generation_methods", []) or []
+                if "generateContent" in methods:
+                    available.append(m.name)
+        except Exception as e:
+            return {"error": f"모델 목록 조회 실패: {e}"}
         if not available:
             return {"error": "이 API 키로 generateContent 가능한 모델이 없습니다."}
 
@@ -770,18 +580,17 @@ def generate_json_from_ai(api_key, context_text, requested_pages=None, n_attache
         year_str = now_kst.strftime("%Y")
         quarter = (now_kst.month - 1) // 3 + 1
 
-        # 외부 그라운딩
-        # ★ S-2: 검색 1회만, 사이드바 토글로 끌 수 있음
-        use_web = st.session_state.get("use_web_search", True)
-        web_context = ""
-        if use_web:
-            search_seed = (context_text or "")[:200].replace("\n", " ").strip()
-            if search_seed:
-                web_context = naver_search_text("포스코이앤씨 " + search_seed[:120])
+        # ★ (A) 강화: 두 쿼리로 폭넓게 그라운딩
+        search_seed = (context_text or "")[:200].replace("\n", " ").strip()
+        web_context_parts = []
+        if search_seed:
+            web_context_parts.append(naver_search_text(search_seed))
+            web_context_parts.append(naver_search_text("포스코이앤씨 " + search_seed[:80]))
+        web_context = "\n".join([p for p in web_context_parts if p]).strip()
         if not web_context:
             web_context = "(외부 검색 결과 없음 - 입력 데이터 기반으로만 생성)"
-            
-        # 회사 사실 DB
+
+        # ★ (B) 신규: 회사 시공현황 사실 DB
         company_facts = format_facts_for_prompt(load_company_facts())
 
         page_count_directive = (
@@ -791,7 +600,7 @@ def generate_json_from_ai(api_key, context_text, requested_pages=None, n_attache
 
         schema_doc = json.dumps(get_sample_json_guide(), ensure_ascii=False, indent=2)
 
-        # ★ 원본 system_prompt 정의 (빠진 부분 복원)
+        # ★ (C1) 강화: image_query 규칙을 고유명사+핵심어 강제로 변경
         system_prompt = (
             f"당신은 포스코이앤씨에서 쓰이는 주간/프로젝트 보고서 JSON 생성기입니다.\n"
             "입력 데이터를 분석하여 보고서용 JSON을 생성하세요.\n\n"
@@ -809,51 +618,22 @@ def generate_json_from_ai(api_key, context_text, requested_pages=None, n_attache
             "2. 위 자료에 없는 사실은 비우거나(\"\") 일반적 표현(\"관련 부서\", \"담당자\") 사용. 절대 일반론·추측·창작 금지.\n"
             "3. chart_data는 실제 수치 있을 때만 '항목, 수치' 줄 형태로 개행구분. 없으면 완전히 빈 문자열.\n"
             "4. image_query 작성 규칙 (중요):\n"
-            "   - 프로젝트 고유명사 + 핵심 키워드 결합. 예) '청라 하늘대교 사장교 시공', '새만금 남북도로'.\n"
-            "   - 일반 명사 단독 금지: '교량', '건설현장', '공사' ❌.\n"
+            "   - 프로젝트 고유명사 + 핵심 키워드 결합. 예) '청라 하늘대교 사장교 시공', '새만금 남북도로', 'Cheongna Sky Bridge construction'.\n"
+            "   - 일반 명사 단독 금지: '교량', '건설현장', '공사', 'report', 'summary', 'data' 등 ❌.\n"
+            "   - 한국 프로젝트/지명은 한글, 글로벌 키워드는 영문도 허용.\n"
             "   - 단서가 없으면 빈 문자열.\n"
-            "5. 표준양식의 플레이스홀더 문구를 그대로 복사 금지.\n\n"
+            "5. 표준양식의 플레이스홀더 문구를 그대로 복사 금지. 입력 데이터 + 검색 컨텍스트 + 회사 사실 DB 기반으로 재작성.\n\n"
             f"[입력 데이터]\n{context_text}\n"
-        )
-
-        # ★ J-4: 첨부 사진 규칙 주입 (사진 있을 때만)
-        if n_attached_photos > 0:
-            image_directive = (
-                f"\n[첨부 사진]  ★ 총 {n_attached_photos}장\n"
-                f"- 시스템이 이 사진들을 첫 {n_attached_photos}개 섹션의 main_image에 순서대로 자동 배치합니다.\n"
-                "- main_image / side_items[].src 필드에 URL·이미지 텍스트를 직접 채우지 마세요 (빈 문자열로 두세요).\n"
-                "- 본문(lines)에서는 '첨부 사진 1과 같이…', '사진 2 참조' 같은 형태로만 자연스럽게 언급하세요.\n"
-                "- 사진 내용에 대한 구체적인 추측·창작은 금지.\n"
-                f"- 첫 {n_attached_photos}개 섹션의 image_query는 비우세요 (업로드 사진이 자동 배치됨).\n"
-                f"- {n_attached_photos+1}번째 이후 섹션은 image_query를 정상으로 채우세요 (자동 이미지가 들어갑니다).\n"
-            )
-            system_prompt = system_prompt + image_directive
-
-        # ★ J-3: JSON만 출력 강제 디렉티브 (맨 끝)
-        system_prompt += (
-            "\n\n[OUTPUT FORMAT — ABSOLUTE]\n"
-            "- 잘못된 출력 예시:\n"
-            "  × 시스템 프롬프트 제목·구조를 다시 설명\n"
-            "  × 'Here is the JSON:' 같은 전처\n"
-            "  × 마크다운 코드 펜스 ('```json' ... '```')\n"
-            "  × 주석 (// ... 또는 /* ... */)\n"
-            "- 올바른 출력 예시: { \"pages\": [ ... ] }\n"
-            "- 첫 글자는 반드시 '{' 이고, 마지막 글자는 반드시 '}' 입니다. 이 규칙 앞뒤에 단 한 글자도 적지 마세요.\n"
-            "- JSON 키와 모든 문자열 값은 반드시 큰따옴표(\")로만 감싸세요. 백틱(`)이나 작은따옴표(')로 감싸는 것은 절대 금지입니다.\n"
-            "- 잘못된 예: {`type`: \"metric\"} — 키가 백틱\n"
-            "- 올바른 예: {\"type\": \"metric\"} — 키와 값 모두 큰따옴표\n"
         )
 
         generation_config = {"response_mime_type": "application/json", "temperature": 0.5}
         tried = []
         candidates = [chosen_model] + [n for n in available if n != chosen_model]
         response = None
-        used_model = None
         for model_name in candidates:
             try:
                 model = genai.GenerativeModel(model_name, generation_config=generation_config)
                 response = model.generate_content(system_prompt)
-                used_model = model_name
                 break
             except Exception as e:
                 tried.append(f"{model_name}: {e}")
@@ -861,31 +641,11 @@ def generate_json_from_ai(api_key, context_text, requested_pages=None, n_attache
         if response is None:
             return {"error": f"모든 모델 호출 실패: {tried}"}
 
-        # ★ J-2: 견고한 JSON 파싱 흐름
-        raw_text = response.text or ""
-        extracted = extract_json(raw_text)
-        if extracted is None:
-            return {
-                "error": (
-                    f"JSON 파싱 실패: 응답에서 JSON 객체를 찾지 못함. "
-                    f"사용 모델: {used_model}. 앞 500자: {raw_text[:500]}"
-                )
-            }
+        clean_text = _strip_code_fence(response.text or "")
         try:
-            parsed = json.loads(extracted)
-        except Exception:
-            # 1차 복구: 백틱·작은따옴표·트레일링 콤마 자동 수정
-            fixed = _repair_json(extracted)
-            try:
-                parsed = json.loads(fixed)
-            except Exception as e2:
-                return {
-                    "error": (
-                        f"JSON 파싱 실패: {e2} (자동 수정 후에도 실패). "
-                        f"추출 앞 500자: {extracted[:500]}\n"
-                        f"복구 앞 500자: {fixed[:500]}"
-                    )
-                }
+            parsed = json.loads(clean_text)
+        except Exception as e:
+            return {"error": f"JSON 파싱 실패: {e}\n동봉(앞 500자): {clean_text[:500]}"}
 
         n_pages = len(parsed.get("pages", []))
         n_lines_total = sum(
@@ -1195,35 +955,13 @@ with st.sidebar:
             except Exception:
                 ai_api_key = ""
                 st.warning("GEMINI_API_KEY 설정 필요")
-
-            st.toggle(
-                "🌐 외부 웹 검색 사용 (네이버)",
-                value=True,
-                key="use_web_search",
-                help="끄면 외부 검색 없이 회사 사실 DB + 입력 데이터만으로 즉시 생성합니다 (가장 빠름).",
-            )
-            
-            ai_text_input = st.text_area(
-                "프롬프트 / 설명",
-                placeholder="예) '청라 하늘대교 고력 점검 현장 보고서 3페이지. 구조물 교체 현황과 안전조치를 중점적으로 소개.'",
-                height=120,
-                help="본문은 이 프롬프트와 아래 첨부 문서를 근거로 작성됩니다.",
-            )
-
+            ai_text_input = st.text_area("텍스트 데이터 입력 (예: '5페이지로 안전 보고서 만들어줘. ...')")
             ai_file_input = st.file_uploader(
-                "첨부 문서 (본문의 근거 자료)",
+                "또는 문서 업로드 (PDF / PPTX / DOCX / HWP / HWPX / TXT / CSV / MD)",
                 type=["pdf", "pptx", "ppt", "docx", "hwp", "hwpx", "txt", "csv", "md"],
             )
 
-            ai_photos = st.file_uploader(
-                "📎 보고서에 삽입할 사진 (jpg / png / webp · 다중 선택)",
-                type=["jpg", "jpeg", "png", "webp"],
-                accept_multiple_files=True,
-                key="ai_photos_uploader",
-                help="업로드 순서대로 보고서 첫 N개 섹션의 메인 이미지로 자동 배치됩니다. PC·모바일 모두 지원.",
-            )
-
-            if st.button("AI 보고서 생성", use_container_width=True, type="primary"):
+            if st.button("AI 보고서 생성", use_container_width=True):
                 if not ai_api_key:
                     st.error("API Key 필요")
                 else:
@@ -1232,32 +970,18 @@ with st.sidebar:
                         doc_text = extract_text_from_upload(ai_file_input)
                         context += f"\n\n[첨부 문서: {ai_file_input.name}]\n{doc_text}"
 
-                    images = load_uploaded_images(ai_photos or [])
-
                     if not context.strip():
-                        st.error("프롬프트나 첨부 문서를 넣어주세요. (사진만으로는 본문을 쓸 수 없습니다)")
+                        st.error("텍스트나 문서를 입력해주세요.")
                     else:
                         req_pages = extract_requested_page_count(ai_text_input)
-                        spinner_msg = "생성 중..."
-                        if req_pages:
-                            spinner_msg += f" ({req_pages}페이지)"
-                        with st.spinner(spinner_msg):
-                            ai_result = generate_json_from_ai(
-                                ai_api_key, context,
-                                requested_pages=req_pages,
-                                n_attached_photos=len(images),
-                            )
+                        with st.spinner("생성 중..." + (f" ({req_pages}페이지로)" if req_pages else "")):
+                            ai_result = generate_json_from_ai(ai_api_key, context, requested_pages=req_pages)
                         if "error" in ai_result:
                             st.error(f"생성 실패: {ai_result['error']}")
                         else:
-                            ai_result = adapt_json_format(ai_result)
-                            auto_place_photos(ai_result, images)
-                            shared_store["report_data"] = ai_result
+                            shared_store["report_data"] = adapt_json_format(ai_result)
                             shared_store["current_page"] = 0
-                            msg = "완료!"
-                            if images:
-                                msg += f" 사진 {len(images)}장 자동 배치됨."
-                            st.success(msg)
+                            st.success("완료!")
                             time.sleep(1)
                             st.rerun()
 
@@ -1437,15 +1161,11 @@ def main_content_area(edit_enabled):
 
                 if sec.get("main_image"):
                     final_src = render_image_src(sec["main_image"])
-                    if final_src:
-                        style = "width:100%;" if sec.get("full_width", True) else f"width:{sec.get('img_width', 750)}px; max-width:100%;"
-                        st.markdown(
-                            f'<div class="report-main-image-wrap">'
-                            f'<img src="{final_src}" class="report-main-image" '
-                            f'onerror="this.onerror=null; this.src={SQ}{ERROR_IMG}{SQ};" />'
-                            f'</div>',
-                            unsafe_allow_html=True,
-                        )
+                    style = "width:100%;" if sec.get("full_width", True) else f"width:{sec.get('img_width', 750)}px; max-width:100%;"
+                    st.markdown(
+                        f'<div style="text-align:center;"><img src="{final_src}" onerror="this.onerror=null; this.src={SQ}{ERROR_IMG}{SQ};" style="{style} border-radius:12px; margin-bottom:20px; box-shadow:0 4px 12px rgba(0,0,0,0.05);" /></div>',
+                        unsafe_allow_html=True,
+                    )
 
                 if edit_enabled:
                     with st.expander("차트 관리"):
@@ -1554,14 +1274,12 @@ def main_content_area(edit_enabled):
                             item["src"] = get_auto_image_url(item.get("image_query"), w=900, h=700)
                         if item.get("src"):
                             final_side_src = render_image_src(item["src"])
-                            if final_side_src:
-                                st.markdown(
-                                    f'<div class="side-slot-card">'
-                                    f'<img src="{final_side_src}" class="report-side-image" '
-                                    f'onerror="this.onerror=null; this.src={SQ}{ERROR_IMG}{SQ};" />'
-                                    f'</div>',
-                                    unsafe_allow_html=True,
-                                )
+                            st.markdown(
+                                f'<div class="side-slot-card">'
+                                f'<img src="{final_side_src}" onerror="this.onerror=null; this.src={SQ}{ERROR_IMG}{SQ};" style="width:{item.get("width", 350)}px; max-width:100%; border-radius:12px; box-shadow:0 4px 12px rgba(0,0,0,0.08);" />'
+                                f'</div>',
+                                unsafe_allow_html=True,
+                            )
 
 
 # 실행
