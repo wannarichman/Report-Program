@@ -272,7 +272,7 @@ def extract_hwp(raw):
                 raw_stream = ole.openstream(stream).read()
                 data = zlib.decompress(raw_stream, -15) if is_compressed else raw_stream
                 i = 0
-                 paras = []
+                paras = []
                 while i + 4 <= len(data):
                     head = struct.unpack("<I", data[i:i+4])[0]
                     tag_id = head & 0x3FF
