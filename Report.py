@@ -660,9 +660,65 @@ def generate_json_from_ai(api_key, context_text, requested_pages=None):
     except Exception as e:
         return {"error": str(e)}
 
+# ==========================================
+# 5-1. 입장 게이트 (역할 선택 + 이름 입력)
+# ==========================================
+def render_onboarding_gate():
+    """역할/이름이 정해지지 않았으면 게이트 화면을 띄우고 False 반환.
+    True가 반환된 경우에만 메인 UI를 그려야 한다.
+    """
+    if st.session_state.get("user_ready"):
+        return True
 
+    st.markdown(
+        "<div style='text-align:center; padding:30px 0 10px 0;'>"
+        "<h1 style='margin:0; color:#0f172a;'>📋 AI Live Sync 입장</h1>"
+        "<p style='color:#64748b; margin-top:8px;'>역할을 선택하고 이름(또는 직함)을 입력해 주세요.</p>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+    col_l, col_c, col_r = st.columns([1, 2, 1])
+    with col_c:
+        with st.container(border=True):
+            with st.form("onboarding_form", clear_on_submit=False):
+                role_label = st.radio(
+                    "역할",
+                    ["🎤 보고자 (발표·편집 권한)", "👥 피보고자 (청취·채팅)"],
+                    index=1,
+                    horizontal=False,
+                )
+                name = st.text_input(
+                    "이름 / 직함",
+                    value=st.session_state.get("user_name", ""),
+                    placeholder="예) 최우석 대리 / 안전팀 김OO",
+                    max_chars=30,
+                )
+                submitted = st.form_submit_button("입장", use_container_width=True, type="primary")
+
+            if submitted:
+                if not (name and name.strip()):
+                    st.error("이름을 입력해 주세요.")
+                    return False
+                role_key = "reporter" if role_label.startswith("🎤") else "audience"
+                role_kor = "보고자" if role_key == "reporter" else "피보고자"
+                st.session_state.user_role = role_key
+                st.session_state.user_name = name.strip()
+                st.session_state.user_label = f"{name.strip()} ({role_kor})"
+                st.session_state.user_ready = True
+                # 새로고침 시에도 유지되도록 URL 파라미터에 보존
+                st.query_params["role"] = role_key
+                st.query_params["name"] = name.strip()
+                st.rerun()
+
+    st.caption("💡 같은 링크를 여러 명이 열어도 각자 입력한 이름으로 구분됩니다.")
+    return False
+    
 # ==========================================
 # 6. ID 식별 및 Agora 음성
+# ==========================================
+# ==========================================
+# 6. ID 식별 (uid 발급 + 역할/이름 복원)
 # ==========================================
 if "uid" not in st.session_state:
     url_uid = st.query_params.get("uid")
@@ -673,65 +729,150 @@ if "uid" not in st.session_state:
         st.session_state.uid = new_uid
         st.query_params["uid"] = new_uid
 
-if "user_label" not in st.session_state:
-    active_now = len([s for s in shared_store["active_sessions"].values() if time.time() - s["last_seen"] < 10])
-    st.session_state.user_label = f"참여자 {active_now + 1}"
+# query_params에 role/name이 있으면 자동 복원 (새로고침 시 게이트 건너뜀)
+if "user_ready" not in st.session_state:
+    qr_role = st.query_params.get("role")
+    qr_name = st.query_params.get("name")
+    if qr_role in ("reporter", "audience") and qr_name:
+        role_kor = "보고자" if qr_role == "reporter" else "피보고자"
+        st.session_state.user_role = qr_role
+        st.session_state.user_name = qr_name
+        st.session_state.user_label = f"{qr_name} ({role_kor})"
+        st.session_state.user_ready = True
 
+# 게이트 통과 못하면 사이드바/메인 렌더 중단
+if not render_onboarding_gate():
+    st.stop()
+
+# 이 시점부터는 user_role / user_name / user_label 모두 보장됨
+is_reporter = (st.session_state.user_role == "reporter")
+my_label = st.session_state.user_label
 
 def agora_voice_system(app_id, channel, user_label):
+    """Agora 음성:
+    - 연결 상태 (CONNECTING / CONNECTED / DISCONNECTED / FAILED) 를 시각적으로 표시
+    - 마이크 음소거(mute) 와 채널 연결(connect) 을 분리
+    - 연결 끊김 시 최대 3회 자동 재연결
+    - 음량 레벨바는 '연결됨' & '음소거 해제' 일 때만 동작
+    """
     custom_html = """
-<script src="https://download.agora.io/sdk/release/AgoraRTC_N-4.11.0.js"></script>
-<div class="voice-panel">
-    <div id="v-status" style="font-size:13px; font-weight:700; margin-bottom:8px; color:#1e293b;">🎙 USER_LABEL</div>
-    <div style="width:100%; height:10px; background:#e2e8f0; border-radius:5px; margin-bottom:12px; overflow:hidden;">
-        <div id="level-bar" style="width:0%; height:100%; background:#28a745; transition:width 0.05s;"></div>
+<script src=\"https://download.agora.io/sdk/release/AgoraRTC_N-4.20.0.js\"></script>
+<style>
+.voice-status { display:flex; align-items:center; gap:8px; justify-content:center; font-size:13px; font-weight:700; margin-bottom:8px; }
+.voice-status .dot { width:10px; height:10px; border-radius:50%; display:inline-block; }
+.voice-status.connecting .dot { background:#f59e0b; animation:pulse 1s infinite; }
+.voice-status.connected  .dot { background:#22c55e; box-shadow:0 0 0 4px rgba(34,197,94,0.18); }
+.voice-status.failed     .dot { background:#ef4444; }
+.voice-status.disconnected .dot { background:#94a3b8; }
+.voice-status.connecting    { color:#92400e; }
+.voice-status.connected     { color:#166534; }
+.voice-status.failed        { color:#b91c1c; }
+.voice-status.disconnected  { color:#475569; }
+@keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.35; } }
+.btn-mute { padding:8px 16px; background:#22c55e; color:#fff; border:none; border-radius:8px; cursor:pointer; font-weight:bold; width:100%; }
+.btn-mute.muted { background:#ef4444; }
+.btn-mute[disabled] { background:#cbd5e1; cursor:not-allowed; }
+</style>
+
+<div class=\"voice-panel\">
+    <div id=\"v-status\" class=\"voice-status connecting\"><span class=\"dot\"></span><span id=\"v-status-text\">연결 중…</span></div>
+    <div style=\"font-size:11px; text-align:center; color:#64748b; margin-bottom:8px;\">USER_LABEL</div>
+    <div style=\"width:100%; height:10px; background:#e2e8f0; border-radius:5px; margin-bottom:12px; overflow:hidden;\">
+        <div id=\"level-bar\" style=\"width:0%; height:100%; background:#22c55e; transition:width 0.05s;\"></div>
     </div>
-    <button id="mute" class="btn-mute">🎤 마이크 : 켜짐</button>
+    <button id=\"mute\" class=\"btn-mute\" disabled>🎤 마이크 : 켜짐</button>
 </div>
+
 <script>
-let client = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
+let client = AgoraRTC.createClient({ mode: \"rtc\", codec: \"vp8\" });
 let localTracks = { audioTrack: null };
 let isMuted = false;
+let retryCount = 0;
+const MAX_RETRY = 3;
+
+function setStatus(state, text) {
+    const el = document.getElementById(\"v-status\");
+    if (!el) return;
+    el.classList.remove(\"connecting\", \"connected\", \"failed\", \"disconnected\");
+    el.classList.add(state);
+    document.getElementById(\"v-status-text\").innerText = text;
+    const btn = document.getElementById(\"mute\");
+    if (btn) btn.disabled = (state !== \"connected\");
+    if (state !== \"connected\") {
+        const lb = document.getElementById(\"level-bar\");
+        if (lb) lb.style.width = \"0%\";
+    }
+}
 
 async function join() {
+    setStatus(\"connecting\", retryCount === 0 ? \"연결 중…\" : `재연결 중… (${retryCount}/${MAX_RETRY})`);
     try {
-        await client.join("APP_ID", "CHANNEL", null, null);
-        localTracks.audioTrack = await AgoraRTC.createMicrophoneAudioTrack();
+        await client.join(\"APP_ID\", \"CHANNEL\", null, null);
+        localTracks.audioTrack = await AgoraRTC.createMicrophoneAudioTrack({
+            AEC: true, ANS: true, AGC: true,
+        });
         await client.publish([localTracks.audioTrack]);
         client.enableAudioVolumeIndicator();
-        client.on("volume-indicator", (vs) => {
+
+        client.on(\"volume-indicator\", (vs) => {
             vs.forEach((v) => {
                 if (v.uid === 0 && !isMuted) {
-                    document.getElementById("level-bar").style.width = Math.min(v.level * 2, 100) + "%";
-                }
-                if (isMuted) {
-                    document.getElementById("level-bar").style.width = "0%";
+                    document.getElementById(\"level-bar\").style.width = Math.min(v.level * 2, 100) + \"%\";
                 }
             });
         });
-        client.on("user-published", async (u, m) => {
-            await client.subscribe(u, m);
-            if (m === "audio") u.audioTrack.play();
+        client.on(\"user-published\", async (u, m) => {
+            try {
+                await client.subscribe(u, m);
+                if (m === \"audio\") u.audioTrack.play();
+            } catch (e) { console.error(\"subscribe failed\", e); }
         });
-    } catch (e) { console.error(e); }
+        client.on(\"connection-state-change\", (cur, prev, reason) => {
+            console.log(\"agora state:\", prev, \"->\", cur, reason);
+            if (cur === \"CONNECTED\") {
+                retryCount = 0;
+                setStatus(\"connected\", \"🟢 연결됨\");
+            } else if (cur === \"DISCONNECTED\") {
+                setStatus(\"disconnected\", \"⚪ 연결 끊김\");
+                if (retryCount < MAX_RETRY) {
+                    retryCount += 1;
+                    setTimeout(join, 1500 * retryCount);
+                }
+            } else if (cur === \"RECONNECTING\") {
+                setStatus(\"connecting\", \"🔄 재연결 중…\");
+            }
+        });
+
+        retryCount = 0;
+        setStatus(\"connected\", \"🟢 연결됨\");
+    } catch (e) {
+        console.error(\"join failed\", e);
+        if (retryCount < MAX_RETRY) {
+            retryCount += 1;
+            setStatus(\"connecting\", `재연결 시도… (${retryCount}/${MAX_RETRY})`);
+            setTimeout(join, 1500 * retryCount);
+        } else {
+            setStatus(\"failed\", \"🔴 연결 실패 (새로고침)\");
+        }
+    }
 }
 
 function toggleMute() {
     if (!localTracks.audioTrack) return;
     isMuted = !isMuted;
     localTracks.audioTrack.setEnabled(!isMuted);
-    const btn = document.getElementById("mute");
+    const btn = document.getElementById(\"mute\");
     if (isMuted) {
-        btn.innerText = "🔇 마이크 : 꺼짐";
-        btn.classList.add("active");
+        btn.innerText = \"🔇 마이크 : 음소거\";
+        btn.classList.add(\"muted\");
     } else {
-        btn.innerText = "🎤 마이크 : 켜짐";
-        btn.classList.remove("active");
+        btn.innerText = \"🎤 마이크 : 켜짐\";
+        btn.classList.remove(\"muted\");
     }
 }
 
 join();
-document.getElementById("mute").onclick = toggleMute;
+document.getElementById(\"mute\").onclick = toggleMute;
 </script>
 """
     custom_html = (
@@ -740,27 +881,42 @@ document.getElementById("mute").onclick = toggleMute;
         .replace("CHANNEL", channel)
         .replace("USER_LABEL", user_label)
     )
-    components.html(custom_html, height=160)
-
+    components.html(custom_html, height=200)
 
 @st.fragment(run_every="1s")
 def sync_member_list(my_uid):
     with st.container(border=True):
         st.caption("실시간 보이스 연결 멤버")
         now = time.time()
-        temp_sessions = {}
+        reporters, audience = [], []
+        seen = set()
         for uid, info in shared_store["active_sessions"].items():
-            if (now - info["last_seen"] < 6) and info.get("voice_connected"):
-                base_label = info["label"]
-                is_me = (uid == my_uid)
-                if base_label not in temp_sessions or is_me:
-                    temp_sessions[base_label] = is_me
-        if not temp_sessions:
+            if (now - info.get("last_seen", 0)) > 6:
+                continue
+            if not info.get("voice_connected"):
+                continue
+            label = info.get("label", "")
+            if label in seen:
+                continue
+            seen.add(label)
+            is_me = (uid == my_uid)
+            display = label + (" (나)" if is_me else "")
+            if info.get("role") == "reporter":
+                reporters.append(display)
+            else:
+                audience.append(display)
+
+        if not reporters and not audience:
             st.write("연결된 멤버 없음")
-        else:
-            for label in sorted(temp_sessions.keys()):
-                display_name = label + (" (나)" if temp_sessions[label] else "")
-                st.markdown(f"🟢 {display_name}")
+            return
+        if reporters:
+            st.markdown("**🎤 보고자**")
+            for n in sorted(reporters):
+                st.markdown(f"&nbsp;&nbsp;🟢 {n}")
+        if audience:
+            st.markdown("**👥 피보고자**")
+            for n in sorted(audience):
+                st.markdown(f"&nbsp;&nbsp;🟢 {n}")
 
 
 # ==========================================
@@ -768,9 +924,17 @@ def sync_member_list(my_uid):
 # ==========================================
 with st.sidebar:
     st.title("AI Live Sync")
-    is_reporter = st.toggle("보고자 권한 (편집기능 활성화)", value=False)
-    my_label = "보고자" if is_reporter else f"{st.session_state.user_label}"
-    voice_connect = st.toggle("마이크 연결", value=False, key="voice_active_toggle")
+    st.caption(f"입장: **{my_label}**")
+    if st.button("역할/이름 변경", use_container_width=True):
+        for k in ("user_ready", "user_role", "user_name", "user_label"):
+            st.session_state.pop(k, None)
+        st.query_params.pop("role", None)
+        st.query_params.pop("name", None)
+        st.rerun()
+    st.divider()
+
+    voice_connect = st.toggle("음성 채널 접속", value=False, key="voice_active_toggle",
+                              help="체크하면 Agora 보이스 채널에 접속합니다. 음소거는 별도 버튼에서 제어합니다.")
 
     if voice_connect:
         try:
@@ -778,6 +942,8 @@ with st.sidebar:
             agora_voice_system(agora_id, shared_store["voice_channel"], my_label)
         except Exception:
             st.warning("Agora ID 설정 필요")
+    else:
+        st.info("⚪ 음성 미접속 — 토글로 접속하세요")
 
     sync_member_list(st.session_state.uid)
 
@@ -858,12 +1024,12 @@ with st.sidebar:
 # ==========================================
 @st.fragment(run_every="1s")
 def main_content_area(edit_enabled):
-    shared_store["active_sessions"][st.session_state.uid] = {
-        "label": my_label,
-        "last_seen": time.time(),
-        "voice_connected": st.session_state.get("voice_active_toggle", False),
-    }
-
+shared_store["active_sessions"][st.session_state.uid] = {
+    "label": my_label,
+    "role": st.session_state.get("user_role", "audience"),
+    "last_seen": time.time(),
+    "voice_connected": st.session_state.get("voice_active_toggle", False),
+}
     with st.expander("실시간 채팅", expanded=False):
         c1, c2 = st.columns([4, 1])
         msg = c1.text_input("메시지", key="chat_in", label_visibility="collapsed")
