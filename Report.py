@@ -1000,7 +1000,15 @@ def generate_json_from_ai(api_key, context_text, requested_pages=None, n_attache
                 break
             except Exception as e:
                 tried.append(f"{model_name}: {e}")
+                
+                # Quota 초과 에러 시 불필요한 모델 재시도 없이 즉시 중단 및 에러 반환
+                error_str = str(e).lower()
+                if "429" in error_str or "quota" in error_str:
+                    return {
+                        "error": "Gemini API 무료 제공량(Quota)을 초과했습니다. 약 1분 후 다시 시도하시거나 유료 결제 설정을 확인해주세요."
+                    }
                 continue
+
         if response is None:
             return {"error": f"모든 모델 호출 실패: {tried}"}
 
