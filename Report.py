@@ -887,10 +887,12 @@ def generate_json_from_ai(api_key, context_text, requested_pages=None, n_attache
         if not available:
             return {"error": "이 API 키로 generateContent 가능한 모델이 없습니다."}
 
+        # ★ 수정: 무료 한도(RPM)가 가장 넉넉한 모델을 최우선으로 배치하여 할당량 초과 에러를 최소화
         preferred_order = [
-            "gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-001",
-            "gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-1.5-flash-002",
-            "gemini-1.5-pro", "gemini-1.5-pro-latest",
+            "gemini-1.5-flash",
+            "gemini-1.5-flash-8b",
+            "gemini-1.5-flash-latest",
+            "gemini-2.0-flash",
         ]
 
         def pick_model(avail_list):
@@ -911,7 +913,6 @@ def generate_json_from_ai(api_key, context_text, requested_pages=None, n_attache
         quarter = (now_kst.month - 1) // 3 + 1
 
         # 외부 그라운딩
-        # ★ S-2: 검색 1회만, 사이드바 토글로 끌 수 있음
         use_web = st.session_state.get("use_web_search", True)
         web_context = ""
         if use_web:
@@ -931,7 +932,6 @@ def generate_json_from_ai(api_key, context_text, requested_pages=None, n_attache
 
         schema_doc = json.dumps(get_sample_json_guide(), ensure_ascii=False, indent=2)
 
-        # ★ 원본 system_prompt 정의 (빠진 부분 복원)
         system_prompt = (
             f"당신은 포스코이앤씨에서 쓰이는 주간/프로젝트 보고서 JSON 생성기입니다.\n"
             "입력 데이터를 분석하여 보고서용 JSON을 생성하세요.\n\n"
@@ -956,7 +956,6 @@ def generate_json_from_ai(api_key, context_text, requested_pages=None, n_attache
             f"[입력 데이터]\n{context_text}\n"
         )
 
-        # ★ J-4: 첨부 사진 규칙 주입 (사진 있을 때만)
         if n_attached_photos > 0:
             image_directive = (
                 f"\n[첨부 사진]  ★ 총 {n_attached_photos}장\n"
@@ -969,7 +968,6 @@ def generate_json_from_ai(api_key, context_text, requested_pages=None, n_attache
             )
             system_prompt = system_prompt + image_directive
 
-        # ★ J-3: JSON만 출력 강제 디렉티브 (맨 끝)
         system_prompt += (
             "\n\n[OUTPUT FORMAT — ABSOLUTE]\n"
             "- 잘못된 출력 예시:\n"
@@ -984,48 +982,36 @@ def generate_json_from_ai(api_key, context_text, requested_pages=None, n_attache
             "- 올바른 예: {\"type\": \"metric\"} — 키와 값 모두 큰따옴표\n"
         )
 
-        # 속도 최적화를 위해 시도할 후보 모델을 최대 2개로 제한
         generation_config = {"response_mime_type": "application/json", "temperature": 0.2}
-        tried = []
-        candidates = [chosen_model] + [n for n in available if n != chosen_model]
-        candidates = candidates[:2]  # 재시도 너무 많이 하면 지연되므로 최대 2개 모델로 제한
         
-        response = None
-        used_model = None
-        for model_name in candidates:
-            try:
-                model = genai.GenerativeModel(model_name, generation_config=generation_config)
-                response = model.generate_content(system_prompt)
-                used_model = model_name
-                break
-            except Exception as e:
-                tried.append(f"{model_name}: {e}")
-                
-                # Quota 초과 에러 시 불필요한 모델 재시도 없이 즉시 중단 및 에러 반환
-                error_str = str(e).lower()
-                if "429" in error_str or "quota" in error_str:
-                    return {
-                        "error": "Gemini API 무료 제공량(Quota)을 초과했습니다. 약 1분 후 다시 시도하시거나 유료 결제 설정을 확인해주세요."
-                    }
-                continue
+        # ★ 수정: 속도 저하 방지를 위해 재시도 없이 최우선 무료 모델만 1회 호출 시도
+        try:
+            model = genai.GenerativeModel(chosen_model, generation_config=generation_config)
+            response = model.generate_content(system_prompt)
+        except Exception as e:
+            # 무료 한도 초과(429) 시 친절한 안내 메시지 반환
+            error_str = str(e).lower()
+            if "429" in error_str or "quota" in error_str:
+                return {
+                    "error": "무료 호출 한도(분당 15회 등)에 도달했습니다. 약 1분 후 다시 생성 버튼을 눌러주세요."
+                }
+            return {"error": f"API 호출 실패 ({chosen_model}): {e}"}
 
         if response is None:
-            return {"error": f"모든 모델 호출 실패: {tried}"}
+            return {"error": "모델 응답이 비어있습니다."}
 
-        # ★ J-2: 견고한 JSON 파싱 흐름
         raw_text = response.text or ""
         extracted = extract_json(raw_text)
         if extracted is None:
             return {
                 "error": (
                     f"JSON 파싱 실패: 응답에서 JSON 객체를 찾지 못함. "
-                    f"사용 모델: {used_model}. 앞 500자: {raw_text[:500]}"
+                    f"사용 모델: {chosen_model}. 앞 500자: {raw_text[:500]}"
                 )
             }
         try:
             parsed = json.loads(extracted)
         except Exception:
-            # 1차 복구: 백틱·작은따옴표·트레일링 콤마 자동 수정
             fixed = _repair_json(extracted)
             try:
                 parsed = json.loads(fixed)
