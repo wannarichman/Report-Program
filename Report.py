@@ -263,10 +263,11 @@ def extract_text_from_upload(uploaded_file):
     return (text or "")[:MAX_DOC_CHARS]
 
 
+# ==========================================
+# 0-2. 이미지 업로드 처리 (직접 배치)
+# ==========================================
 def load_uploaded_images(files):
-    """Streamlit UploadedFile 리스트 → Gemini Vision 입력·토큰 치환에 쓸 dict 리스트.
-    각 항목: { index, name, mime, data_url, raw, pil }
-    """
+    """Streamlit UploadedFile 리스트 → base64 data URL 리스트."""
     out = []
     if not files:
         return out
@@ -280,44 +281,33 @@ def load_uploaded_images(files):
                 ext = (f.name or "").lower().split(".")[-1]
                 mime = "image/jpeg" if ext in ("jpg", "jpeg") else f"image/{ext or 'jpeg'}"
             b64 = base64.b64encode(raw).decode()
-            entry = {
+            out.append({
                 "index": idx,
                 "name": f.name or f"photo_{idx}",
-                "mime": mime,
                 "data_url": f"data:{mime};base64,{b64}",
-                "raw": raw,
-                "pil": None,
-            }
-            if HAS_PIL:
-                try:
-                    entry["pil"] = Image.open(BytesIO(raw))
-                except Exception:
-                    entry["pil"] = None
-            out.append(entry)
+            })
         except Exception:
             continue
     return out
 
 
-def resolve_uploaded_tokens(report, images):
-    """AI가 생성한 JSON 안의 'UPLOADED:N' 토큰을 실제 base64 data URL로 치환."""
+def auto_place_photos(report, images):
+    """업로드된 사진을 보고서 첫 N개 섹션의 main_image에 순서대로 강제 배치."""
     if not images or not isinstance(report, dict):
         return report
-    url_map = {f"UPLOADED:{im['index']}": im["data_url"] for im in images}
-
-    def fix(v):
-        if isinstance(v, str):
-            s = v.strip()
-            if s.startswith("UPLOADED:"):
-                return url_map.get(s, v)
-        return v
-
+    flat = []
     for pg in report.get("pages", []) or []:
         for sec in pg.get("sections", []) or []:
-            sec["main_image"] = fix(sec.get("main_image"))
-            for it in sec.get("side_items", []) or []:
-                if it.get("type") == "image":
-                    it["src"] = fix(it.get("src"))
+            flat.append(sec)
+    if not flat:
+        return report
+    for i, im in enumerate(images):
+        if i >= len(flat):
+            break
+        sec = flat[i]
+        sec["main_image"] = im["data_url"]
+        sec["image_query"] = ""  # 자동 검색 폴백 차단
+        sec["full_width"] = True
     return report
 
 # ==========================================
@@ -549,7 +539,9 @@ def get_auto_image_url(query, w=1600, h=900):
         return naver_url
     tags = ",".join([urllib.parse.quote(t.strip()) for t in q.split(",") if t.strip()])
     lock = abs(hash(q)) % 100000
-    return f"https://loremflickr.com/{w}/{h}/{tags}?lock={lock}"
+    # ★ v6 수정: 불필요한 { } 괄호 제거 (broken image 원인 제거)
+    base = "https://loremflickr.com/"
+    return base + str(w) + "/" + str(h) + "/" + tags + "?lock=" + str(lock)
 
 
 def render_image_src(img_val):
@@ -557,6 +549,11 @@ def render_image_src(img_val):
         return ""
     val = img_val.strip()
     if not val:
+        return ""
+    # 깨진 URL 패턴 차단 (broken image 방지)
+    if val.startswith("UPLOADED:"):  # 구버전 잔존
+        return ""
+    if val.startswith("{") or val.startswith("}"):
         return ""
     if val.startswith("http://") or val.startswith("https://") or val.startswith("data:image"):
         return val
@@ -607,7 +604,7 @@ def format_facts_for_prompt(facts):
 # ==========================================
 # 5. AI 텍스트 -> JSON  ★ v3 (B + C1) 강화
 # ==========================================
-def generate_json_from_ai(api_key, context_text, requested_pages=None, images=None):
+def generate_json_from_ai(api_key, context_text, requested_pages=None, n_attached_photos=0):
     try:
         genai.configure(api_key=api_key)
         try:
@@ -691,29 +688,16 @@ def generate_json_from_ai(api_key, context_text, requested_pages=None, images=No
         )
 
         # ★ v6: 첨부 사진 규칙을 시스템 프롬프트에 주입
-        n_images = len(images) if images else 0
-        if n_images > 0:
+        if n_attached_photos > 0:
             image_directive = (
-                f"\n[첨부 현장 사진]  ★ 총 {n_images}장 (인덱스 0..{n_images - 1})\n"
-                "- 각 사진을 직접 분석해서 본문(lines)에 최대한 구체적으로 설명하세요 (구조물·인원·장비·안전이슈·계절·날씨 등).\n"
-                "- 사진을 보고서 안에 실제로 배치하려면 main_image 또는 side_items[].src 필드에 "
-                "\"UPLOADED:0\", \"UPLOADED:1\" 형식의 토큰을 적으세요 (외부 URL·더미 이미지 금지).\n"
-                "- 한 사진을 여러 섹션에 재사용 가능. 관련성 없는 사진은 생략해도 됨.\n"
-                "- 가능하면 첫 섹션 main_image에 가장 대표적인 사진(0번 우선) 배치.\n"
+                f"\n[첨부 사진]  ★ 총 {n_attached_photos}장\n"
+                f"- 시스템이 이 사진들을 첫 {n_attached_photos}개 섹션의 main_image에 순서대로 자동 배치합니다.\n"
+                "- main_image / side_items[].src 필드에 URL·이미지 텍스트를 직접 채우지 마세요 (빈 문자열로 두세요).\n"
+                "- 본문(lines)에서는 \"첨부 사진 1과 같이…\", \"사진 2 참조\" 같은 형태로만 자연스럽게 언급하세요.\n"
+                "- 사진 내용에 대한 구체적인 추측·창작은 금지 (사용자가 올린 사진이므로 이미 현장을 알고 있음). 첨부 문서·프롬프트에 적힌 사실만 사용.\n"
+                "- image_query 필드도 비우세요 (자동 배치되므로 불필요).\n"
             )
             system_prompt = system_prompt + image_directive
-
-        # 멀티모달 parts 구성: [text, img1, img2, ...]
-        parts = [system_prompt]
-        if images:
-            for im in images:
-                if im.get("pil") is not None:
-                    parts.append(im["pil"])
-                else:
-                    try:
-                        parts.append({"mime_type": im["mime"], "data": im["raw"]})
-                    except Exception:
-                        continue
 
         generation_config = {"response_mime_type": "application/json", "temperature": 0.5}
         tried = []
@@ -722,7 +706,7 @@ def generate_json_from_ai(api_key, context_text, requested_pages=None, images=No
         for model_name in candidates:
             try:
                 model = genai.GenerativeModel(model_name, generation_config=generation_config)
-                response = model.generate_content(parts if len(parts) > 1 else parts[0])
+                response = model.generate_content(system_prompt)
                 break
             except Exception as e:
                 tried.append(f"{model_name}: {e}")
@@ -1048,27 +1032,22 @@ with st.sidebar:
 
             ai_text_input = st.text_area(
                 "프롬프트 / 설명",
-                placeholder="예) '청라 하늘대교 고률 점검 현장 보고서 3페이지. 구조물 교체 현황과 안전조치를 중점적으로 소개.'",
+                placeholder="예) '청라 하늘대교 고력 점검 현장 보고서 3페이지. 구조물 교체 현황과 안전조치를 중점적으로 소개.'",
                 height=120,
+                help="본문은 이 프롬프트와 아래 첨부 문서를 근거로 작성됩니다.",
             )
 
             ai_file_input = st.file_uploader(
-                "첨부 문서 (PDF / PPTX / DOCX / HWP / HWPX / TXT / CSV / MD)",
+                "첨부 문서 (본문의 근거 자료)",
                 type=["pdf", "pptx", "ppt", "docx", "hwp", "hwpx", "txt", "csv", "md"],
             )
 
             ai_photos = st.file_uploader(
-                "📸 현장 사진 (jpg / png / webp · 다중 선택 · 모바일은 카메라 호출)",
+                "📎 보고서에 삽입할 사진 (jpg / png / webp · 다중 선택)",
                 type=["jpg", "jpeg", "png", "webp"],
                 accept_multiple_files=True,
                 key="ai_photos_uploader",
-                help="모바일에서 탭하면 '카메라'·'사진 선택' 옵션이 뜨고, 여러 장을 한 번에 올릴 수 있습니다.",
-            )
-
-            ai_camera = st.camera_input(
-                "또는 즉석 촬영 (모바일 권장)",
-                key="ai_camera_input",
-                help="카메라가 에이는 경우 브라우저 주소창 자물쇠 → 카메라 허용을 확인하세요.",
+                help="업로드 순서대로 보고서 첫 N개 섹션의 메인 이미지로 자동 배치됩니다. PC·모바일 모두 지원.",
             )
 
             if st.button("AI 보고서 생성", use_container_width=True, type="primary"):
@@ -1080,36 +1059,32 @@ with st.sidebar:
                         doc_text = extract_text_from_upload(ai_file_input)
                         context += f"\n\n[첨부 문서: {ai_file_input.name}]\n{doc_text}"
 
-                    # 사진 모아서 images 리스트 구성
-                    photo_files = list(ai_photos or [])
-                    if ai_camera is not None:
-                        photo_files.append(ai_camera)
-                    images = load_uploaded_images(photo_files)
+                    images = load_uploaded_images(ai_photos or [])
 
-                    if not context.strip() and not images:
-                        st.error("프롬프트·문서·사진 중 최소 하나는 넣어주세요.")
+                    if not context.strip():
+                        st.error("프롬프트나 첨부 문서를 넣어주세요. (사진만으로는 본문을 쓸 수 없습니다)")
                     else:
-                        if not context.strip() and images:
-                            context = "첨부된 현장 사진들을 분석해 현장 점검·진행현황 보고서를 작성해주세요."
                         req_pages = extract_requested_page_count(ai_text_input)
                         spinner_msg = "생성 중..."
                         if req_pages:
                             spinner_msg += f" ({req_pages}페이지)"
-                        if images:
-                            spinner_msg += f" · 사진 {len(images)}장 분석"
                         with st.spinner(spinner_msg):
                             ai_result = generate_json_from_ai(
                                 ai_api_key, context,
                                 requested_pages=req_pages,
-                                images=images,
+                                n_attached_photos=len(images),
                             )
                         if "error" in ai_result:
                             st.error(f"생성 실패: {ai_result['error']}")
                         else:
-                            ai_result = resolve_uploaded_tokens(ai_result, images)
-                            shared_store["report_data"] = adapt_json_format(ai_result)
+                            ai_result = adapt_json_format(ai_result)
+                            auto_place_photos(ai_result, images)
+                            shared_store["report_data"] = ai_result
                             shared_store["current_page"] = 0
-                            st.success(f"완료! 사진 {len(images)}장 관련되어 삽입됨." if images else "완료!")
+                            msg = "완료!"
+                            if images:
+                                msg += f" 사진 {len(images)}장 자동 배치됨."
+                            st.success(msg)
                             time.sleep(1)
                             st.rerun()
 
@@ -1289,11 +1264,12 @@ def main_content_area(edit_enabled):
 
                 if sec.get("main_image"):
                     final_src = render_image_src(sec["main_image"])
-                    style = "width:100%;" if sec.get("full_width", True) else f"width:{sec.get('img_width', 750)}px; max-width:100%;"
-                    st.markdown(
-                        f'<div style="text-align:center;"><img src="{final_src}" onerror="this.onerror=null; this.src={SQ}{ERROR_IMG}{SQ};" style="{style} border-radius:12px; margin-bottom:20px; box-shadow:0 4px 12px rgba(0,0,0,0.05);" /></div>',
-                        unsafe_allow_html=True,
-                    )
+                    if final_src:
+                        style = "width:100%;" if sec.get("full_width", True) else f"width:{sec.get('img_width', 750)}px; max-width:100%;"
+                        st.markdown(
+                            f'<div style="text-align:center;"><img src="{final_src}" onerror="this.onerror=null; this.src={SQ}{ERROR_IMG}{SQ};" style="{style} border-radius:12px; margin-bottom:20px; box-shadow:0 4px 12px rgba(0,0,0,0.05);" /></div>',
+                            unsafe_allow_html=True,
+                        )
 
                 if edit_enabled:
                     with st.expander("차트 관리"):
@@ -1402,12 +1378,13 @@ def main_content_area(edit_enabled):
                             item["src"] = get_auto_image_url(item.get("image_query"), w=900, h=700)
                         if item.get("src"):
                             final_side_src = render_image_src(item["src"])
-                            st.markdown(
-                                f'<div class="side-slot-card">'
-                                f'<img src="{final_side_src}" onerror="this.onerror=null; this.src={SQ}{ERROR_IMG}{SQ};" style="width:{item.get("width", 350)}px; max-width:100%; border-radius:12px; box-shadow:0 4px 12px rgba(0,0,0,0.08);" />'
-                                f'</div>',
-                                unsafe_allow_html=True,
-                            )
+                            if final_side_src:
+                                st.markdown(
+                                    f'<div class="side-slot-card">'
+                                    f'<img src="{final_side_src}" onerror="this.onerror=null; this.src={SQ}{ERROR_IMG}{SQ};" style="width:{item.get("width", 350)}px; max-width:100%; border-radius:12px; box-shadow:0 4px 12px rgba(0,0,0,0.08);" />'
+                                    f'</div>',
+                                    unsafe_allow_html=True,
+                                )
 
 
 # 실행
