@@ -985,20 +985,39 @@ def generate_json_from_ai(api_key, context_text, requested_pages=None, n_attache
         generation_config = {"response_mime_type": "application/json", "temperature": 0.2}
         
         # ★ 수정: 속도 저하 방지를 위해 재시도 없이 최우선 무료 모델만 1회 호출 시도
-        try:
-            model = genai.GenerativeModel(chosen_model, generation_config=generation_config)
-            response = model.generate_content(system_prompt)
-        except Exception as e:
-            # 무료 한도 초과(429) 시 친절한 안내 메시지 반환
-            error_str = str(e).lower()
-            if "429" in error_str or "quota" in error_str:
-                return {
-                    "error": "무료 호출 한도(분당 15회 등)에 도달했습니다. 약 1분 후 다시 생성 버튼을 눌러주세요."
-                }
-            return {"error": f"API 호출 실패 ({chosen_model}): {e}"}
+        # ★ 429 뛰면 다음 모델로 폴백 (별도 쿼터 끝기에 성공률 ↑)
+        short_names = {name.split("/")[-1]: name for name in available}
+        fallback_chain = []
+        for p in preferred_order:
+            if p in short_names and short_names[p] not in fallback_chain:
+                fallback_chain.append(short_names[p])
+        for n in available:
+            if n not in fallback_chain:
+                fallback_chain.append(n)
+
+        response = None
+        used_model = None
+        last_error = None
+        for m_name in fallback_chain:
+            try:
+                model = genai.GenerativeModel(m_name, generation_config=generation_config)
+                response = model.generate_content(system_prompt)
+                used_model = m_name
+                break
+            except Exception as e:
+                last_error = e
+                es = str(e).lower()
+                if "429" in es or "quota" in es or "resource_exhausted" in es:
+                    continue  # 이 모델은 한도 초과 → 다음
+                return {"error": f"API 호출 실패 ({m_name}): {e}"}
 
         if response is None:
-            return {"error": "모델 응답이 비어있습니다."}
+            return {
+                "error": (
+                    "모든 모델이 무료 호출 한도에 도달했습니다. 1분 가량 후 다시 시도해주세요.\n"
+                    f"(마지막 오류: {last_error})"
+                )
+            }
 
         raw_text = response.text or ""
         extracted = extract_json(raw_text)
@@ -1006,12 +1025,13 @@ def generate_json_from_ai(api_key, context_text, requested_pages=None, n_attache
             return {
                 "error": (
                     f"JSON 파싱 실패: 응답에서 JSON 객체를 찾지 못함. "
-                    f"사용 모델: {chosen_model}. 앞 500자: {raw_text[:500]}"
+                    f"사용 모델: {used_model}. 앞 500자: {raw_text[:500]}"
                 )
             }
         try:
             parsed = json.loads(extracted)
         except Exception:
+            # 1차 복구: 백틱·작은따옴표·트레일링 콤마 자동 수정
             fixed = _repair_json(extracted)
             try:
                 parsed = json.loads(fixed)
@@ -1360,7 +1380,15 @@ with st.sidebar:
                 help="업로드 순서대로 보고서 첫 N개 섹션의 메인 이미지로 자동 배치됩니다. PC·모바일 모두 지원.",
             )
 
-            if st.button("AI 보고서 생성", use_container_width=True, type="primary"):
+            # ★ 쿨다운: 마지막 생성 시도 후 4초간 버튼 비활성화 (속사 차단)
+            _last_gen = st.session_state.get("_last_gen_ts", 0)
+            _cool = 4  # 초
+            _remain = max(0, _cool - int(time.time() - _last_gen))
+            _btn_disabled = (_remain > 0)
+            _btn_label = f"AI 보고서 생성 ({_remain}초 후 가능)" if _btn_disabled else "AI 보고서 생성"
+
+            if st.button(_btn_label, use_container_width=True, type="primary", disabled=_btn_disabled):
+                st.session_state["_last_gen_ts"] = time.time()
                 if not ai_api_key:
                     st.error("API Key 필요")
                 else:
