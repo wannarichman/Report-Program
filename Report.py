@@ -20,6 +20,13 @@ import struct
 import zipfile
 import xml.etree.ElementTree as ET
 from io import BytesIO
+
+try:
+    from PIL import Image
+    HAS_PIL = True
+except Exception:
+    HAS_PIL = False
+    
 from pathlib import Path
 
 try:
@@ -232,29 +239,62 @@ def extract_hwp(raw):
 
 
 def extract_text_from_upload(uploaded_file):
-    if uploaded_file is None:
-        return ""
-    name = (uploaded_file.name or "").lower()
-    raw = uploaded_file.getvalue()
-    if name.endswith(".pdf"):
-        text = extract_pdf(raw)
-    elif name.endswith(".pptx"):
-        text = extract_pptx(raw)
-    elif name.endswith(".ppt"):
-        text = "[알림] .ppt(구버전) 형식은 직접 파싱이 제한됩니다. PowerPoint에서 '다른 이름으로 저장 → .pptx' 후 다시 업로드해 주세요."
-    elif name.endswith(".docx"):
-        text = extract_docx(raw)
-    elif name.endswith(".hwpx"):
-        text = extract_hwpx(raw)
-    elif name.endswith(".hwp"):
-        text = extract_hwp(raw)
-    else:
+    def load_uploaded_images(files):
+    """Streamlit UploadedFile 리스트 → Gemini Vision 입력·토큰 치환에 쓸 dict 리스트.
+    각 항목: { index, name, mime, data_url, raw, pil }
+    """
+    out = []
+    if not files:
+        return out
+    for idx, f in enumerate(files):
         try:
-            text = raw.decode("utf-8", errors="ignore")
+            raw = f.getvalue()
+            if not raw:
+                continue
+            mime = (getattr(f, "type", "") or "").lower()
+            if not mime.startswith("image/"):
+                ext = (f.name or "").lower().split(".")[-1]
+                mime = "image/jpeg" if ext in ("jpg", "jpeg") else f"image/{ext or 'jpeg'}"
+            b64 = base64.b64encode(raw).decode()
+            entry = {
+                "index": idx,
+                "name": f.name or f"photo_{idx}",
+                "mime": mime,
+                "data_url": f"data:{mime};base64,{b64}",
+                "raw": raw,
+                "pil": None,
+            }
+            if HAS_PIL:
+                try:
+                    entry["pil"] = Image.open(BytesIO(raw))
+                except Exception:
+                    entry["pil"] = None
+            out.append(entry)
         except Exception:
-            text = str(raw)
-    return (text or "")[:MAX_DOC_CHARS]
+            continue
+    return out
 
+
+def resolve_uploaded_tokens(report, images):
+    """AI가 생성한 JSON 안의 'UPLOADED:N' 토큰을 실제 base64 data URL로 치환."""
+    if not images or not isinstance(report, dict):
+        return report
+    url_map = {f"UPLOADED:{im['index']}": im["data_url"] for im in images}
+
+    def fix(v):
+        if isinstance(v, str):
+            s = v.strip()
+            if s.startswith("UPLOADED:"):
+                return url_map.get(s, v)
+        return v
+
+    for pg in report.get("pages", []) or []:
+        for sec in pg.get("sections", []) or []:
+            sec["main_image"] = fix(sec.get("main_image"))
+            for it in sec.get("side_items", []) or []:
+                if it.get("type") == "image":
+                    it["src"] = fix(it.get("src"))
+    return report
 
 # ==========================================
 # 1. 페이지 설정 및 CSS
@@ -543,7 +583,7 @@ def format_facts_for_prompt(facts):
 # ==========================================
 # 5. AI 텍스트 -> JSON  ★ v3 (B + C1) 강화
 # ==========================================
-def generate_json_from_ai(api_key, context_text, requested_pages=None):
+def generate_json_from_ai(api_key, context_text, requested_pages=None, images=None):
     try:
         genai.configure(api_key=api_key)
         try:
@@ -626,21 +666,45 @@ def generate_json_from_ai(api_key, context_text, requested_pages=None):
             f"[입력 데이터]\n{context_text}\n"
         )
 
-        generation_config = {"response_mime_type": "application/json", "temperature": 0.5}
-        tried = []
-        candidates = [chosen_model] + [n for n in available if n != chosen_model]
-        response = None
-        for model_name in candidates:
-            try:
-                model = genai.GenerativeModel(model_name, generation_config=generation_config)
-                response = model.generate_content(system_prompt)
-                break
-            except Exception as e:
-                tried.append(f"{model_name}: {e}")
-                continue
-        if response is None:
-            return {"error": f"모든 모델 호출 실패: {tried}"}
+        # ★ v6: 첨부 사진 귀칙을 시스템 프롬프트에 주입
+n_images = len(images) if images else 0
+if n_images > 0:
+    image_directive = (
+        f"\n[첨부 현장 사진]  ★ 총 {n_images}장 (인덱스 0..{n_images - 1})\n"
+        "- 각 사진을 직접 분석해서 본문(lines)에 최대한 구체적으로 설명하세요 (구조물·인원·장비·안전이슈·계절·날씨 등).\n"
+        "- 사진을 보고서 안에 실제로 배치하려면 main_image 또는 side_items[].src 필드에 "
+        "\"UPLOADED:0\", \"UPLOADED:1\" 형식의 토큰을 적으세요 (외부 URL·더미 이미지 금지).\n"
+        "- 한 사진을 여러 섹션에 재사용 가능. 관련성 없는 사진은 생략해도 됨.\n"
+        "- 가능하면 첫 섹션 main_image에 가장 대표적인 사진(0번 우선) 배치.\n"
+    )
+    system_prompt = system_prompt + image_directive
 
+# 멀티모달 parts 구성: [text, img1, img2, ...]
+parts = [system_prompt]
+if images:
+    for im in images:
+        if im.get("pil") is not None:
+            parts.append(im["pil"])
+        else:
+            try:
+                parts.append({"mime_type": im["mime"], "data": im["raw"]})
+            except Exception:
+                continue
+
+generation_config = {"response_mime_type": "application/json", "temperature": 0.5}
+tried = []
+candidates = [chosen_model] + [n for n in available if n != chosen_model]
+response = None
+for model_name in candidates:
+    try:
+        model = genai.GenerativeModel(model_name, generation_config=generation_config)
+        response = model.generate_content(parts if len(parts) > 1 else parts[0])
+        break
+    except Exception as e:
+        tried.append(f"{model_name}: {e}")
+        continue
+if response is None:
+    return {"error": f"모든 모델 호출 실패: {tried}"}
         clean_text = _strip_code_fence(response.text or "")
         try:
             parsed = json.loads(clean_text)
@@ -949,41 +1013,79 @@ with st.sidebar:
 
     if is_reporter:
         st.divider()
-        with st.expander("AI 자동 보고서 생성", expanded=False):
-            try:
-                ai_api_key = st.secrets["GEMINI_API_KEY"]
-            except Exception:
-                ai_api_key = ""
-                st.warning("GEMINI_API_KEY 설정 필요")
-            ai_text_input = st.text_area("텍스트 데이터 입력 (예: '5페이지로 안전 보고서 만들어줘. ...')")
-            ai_file_input = st.file_uploader(
-                "또는 문서 업로드 (PDF / PPTX / DOCX / HWP / HWPX / TXT / CSV / MD)",
-                type=["pdf", "pptx", "ppt", "docx", "hwp", "hwpx", "txt", "csv", "md"],
-            )
+with st.expander("AI 자동 보고서 생성", expanded=False):
+    try:
+        ai_api_key = st.secrets["GEMINI_API_KEY"]
+    except Exception:
+        ai_api_key = ""
+        st.warning("GEMINI_API_KEY 설정 필요")
 
-            if st.button("AI 보고서 생성", use_container_width=True):
-                if not ai_api_key:
-                    st.error("API Key 필요")
+    ai_text_input = st.text_area(
+        "프롬프트 / 설명",
+        placeholder="예) '청라 하늘대교 고률 점검 현장 보고서 3페이지. 구조물 교체 현황과 안전조치를 중점적으로 소개.'",
+        height=120,
+    )
+
+    ai_file_input = st.file_uploader(
+        "첨부 문서 (PDF / PPTX / DOCX / HWP / HWPX / TXT / CSV / MD)",
+        type=["pdf", "pptx", "ppt", "docx", "hwp", "hwpx", "txt", "csv", "md"],
+    )
+
+    ai_photos = st.file_uploader(
+        "📸 현장 사진 (jpg / png / webp · 다중 선택 · 모바일은 카메라 호출)",
+        type=["jpg", "jpeg", "png", "webp"],
+        accept_multiple_files=True,
+        key="ai_photos_uploader",
+        help="모바일에서 탭하면 '카메라'·'사진 선택' 옵션이 뜨고, 여러 장을 한 번에 올릴 수 있습니다.",
+    )
+
+    ai_camera = st.camera_input(
+        "또는 즉석 촬영 (모바일 권장)",
+        key="ai_camera_input",
+        help="카메라가 에이는 경우 브라우저 주소창 자물쇠 → 카메라 허용을 확인하세요.",
+    )
+
+    if st.button("AI 보고서 생성", use_container_width=True, type="primary"):
+        if not ai_api_key:
+            st.error("API Key 필요")
+        else:
+            context = ai_text_input or ""
+            if ai_file_input:
+                doc_text = extract_text_from_upload(ai_file_input)
+                context += f"\n\n[첨부 문서: {ai_file_input.name}]\n{doc_text}"
+
+            # 사진 모아서 images 리스트 구성
+            photo_files = list(ai_photos or [])
+            if ai_camera is not None:
+                photo_files.append(ai_camera)
+            images = load_uploaded_images(photo_files)
+
+            if not context.strip() and not images:
+                st.error("프롬프트·문서·사진 중 최소 하나는 넣어주세요.")
+            else:
+                if not context.strip() and images:
+                    context = "첨부된 현장 사진들을 분석해 현장 점검·진행현황 보고서를 작성해주세요."
+                req_pages = extract_requested_page_count(ai_text_input)
+                spinner_msg = "생성 중..."
+                if req_pages:
+                    spinner_msg += f" ({req_pages}페이지)"
+                if images:
+                    spinner_msg += f" · 사진 {len(images)}장 분석"
+                with st.spinner(spinner_msg):
+                    ai_result = generate_json_from_ai(
+                        ai_api_key, context,
+                        requested_pages=req_pages,
+                        images=images,
+                    )
+                if "error" in ai_result:
+                    st.error(f"생성 실패: {ai_result['error']}")
                 else:
-                    context = ai_text_input or ""
-                    if ai_file_input:
-                        doc_text = extract_text_from_upload(ai_file_input)
-                        context += f"\n\n[첨부 문서: {ai_file_input.name}]\n{doc_text}"
-
-                    if not context.strip():
-                        st.error("텍스트나 문서를 입력해주세요.")
-                    else:
-                        req_pages = extract_requested_page_count(ai_text_input)
-                        with st.spinner("생성 중..." + (f" ({req_pages}페이지로)" if req_pages else "")):
-                            ai_result = generate_json_from_ai(ai_api_key, context, requested_pages=req_pages)
-                        if "error" in ai_result:
-                            st.error(f"생성 실패: {ai_result['error']}")
-                        else:
-                            shared_store["report_data"] = adapt_json_format(ai_result)
-                            shared_store["current_page"] = 0
-                            st.success("완료!")
-                            time.sleep(1)
-                            st.rerun()
+                    ai_result = resolve_uploaded_tokens(ai_result, images)
+                    shared_store["report_data"] = adapt_json_format(ai_result)
+                    shared_store["current_page"] = 0
+                    st.success(f"완료! 사진 {len(images)}장 관련되어 삽입됨." if images else "완료!")
+                    time.sleep(1)
+                    st.rerun()
 
         st.write("---")
         st.download_button(
