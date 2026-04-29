@@ -44,6 +44,56 @@ ERROR_IMG = "https://placehold.co/800x400/f8fafc/94a3b8?text=Image+Not+Found"
 # ==========================================
 # 0. 유틸
 # ==========================================
+def extract_json(text):
+    """모델 응답에서 JSON 객체 부분만 견고하게 추출.
+    - 앞뒤 평문·설명, 마크다운 코드 펜스 제거
+    - 처음 '{' 부터 짝 맞는 '}' 까지만 추출
+    """
+    if not text:
+        return None
+    s = text.strip()
+    # 1) 마크다운 코드 펜스 감싸고 있으면 제거
+    if s.startswith("```"):
+        s = s.lstrip("`")
+        nl = s.find("\n")
+        if nl > 0 and s[:nl].strip().lower() in ("json", ""):
+            s = s[nl + 1:]
+        if s.rstrip().endswith("```"):
+            s = s.rstrip()[:-3]
+        s = s.strip()
+    # 2) 처음 여는 괄호 위치
+    start = s.find("{")
+    if start == -1:
+        return None
+    # 3) 대응하는 닫는 괄호 찾기 (문자열·이스케이프 인식)
+    depth = 0
+    in_str = False
+    esc = False
+    end = -1
+    for i in range(start, len(s)):
+        ch = s[i]
+        if esc:
+            esc = False
+            continue
+        if ch == "\\":
+            esc = True
+            continue
+        if ch == '"':
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    if end == -1:
+        return None
+    return s[start:end]
+
 def _strip_code_fence(text):
     t = (text or "").strip()
     fence = "`" * 3
@@ -675,7 +725,7 @@ def generate_json_from_ai(api_key, context_text, requested_pages=None, n_attache
         year_str = now_kst.strftime("%Y")
         quarter = (now_kst.month - 1) // 3 + 1
 
-        # ★ (A) 강화: 두 쿼리로 폭넓게 그라운딩
+        # 외부 그라운딩
         search_seed = (context_text or "")[:200].replace("\n", " ").strip()
         web_context_parts = []
         if search_seed:
@@ -685,7 +735,7 @@ def generate_json_from_ai(api_key, context_text, requested_pages=None, n_attache
         if not web_context:
             web_context = "(외부 검색 결과 없음 - 입력 데이터 기반으로만 생성)"
 
-        # ★ (B) 신규: 회사 시공현황 사실 DB
+        # 회사 사실 DB
         company_facts = format_facts_for_prompt(load_company_facts())
 
         page_count_directive = (
@@ -695,7 +745,7 @@ def generate_json_from_ai(api_key, context_text, requested_pages=None, n_attache
 
         schema_doc = json.dumps(get_sample_json_guide(), ensure_ascii=False, indent=2)
 
-        # ★ (C1) 강화: image_query 규칙을 고유명사+핵심어 강제로 변경
+        # ★ 원본 system_prompt 정의 (빠진 부분 복원)
         system_prompt = (
             f"당신은 포스코이앤씨에서 쓰이는 주간/프로젝트 보고서 JSON 생성기입니다.\n"
             "입력 데이터를 분석하여 보고서용 JSON을 생성하세요.\n\n"
@@ -713,47 +763,79 @@ def generate_json_from_ai(api_key, context_text, requested_pages=None, n_attache
             "2. 위 자료에 없는 사실은 비우거나(\"\") 일반적 표현(\"관련 부서\", \"담당자\") 사용. 절대 일반론·추측·창작 금지.\n"
             "3. chart_data는 실제 수치 있을 때만 '항목, 수치' 줄 형태로 개행구분. 없으면 완전히 빈 문자열.\n"
             "4. image_query 작성 규칙 (중요):\n"
-            "   - 프로젝트 고유명사 + 핵심 키워드 결합. 예) '청라 하늘대교 사장교 시공', '새만금 남북도로', 'Cheongna Sky Bridge construction'.\n"
-            "   - 일반 명사 단독 금지: '교량', '건설현장', '공사', 'report', 'summary', 'data' 등 ❌.\n"
-            "   - 한국 프로젝트/지명은 한글, 글로벌 키워드는 영문도 허용.\n"
+            "   - 프로젝트 고유명사 + 핵심 키워드 결합. 예) '청라 하늘대교 사장교 시공', '새만금 남북도로'.\n"
+            "   - 일반 명사 단독 금지: '교량', '건설현장', '공사' ❌.\n"
             "   - 단서가 없으면 빈 문자열.\n"
-            "5. 표준양식의 플레이스홀더 문구를 그대로 복사 금지. 입력 데이터 + 검색 컨텍스트 + 회사 사실 DB 기반으로 재작성.\n\n"
+            "5. 표준양식의 플레이스홀더 문구를 그대로 복사 금지.\n\n"
             f"[입력 데이터]\n{context_text}\n"
         )
 
-        # ★ v6: 첨부 사진 규칙을 시스템 프롬프트에 주입
+        # ★ J-4: 첫부 사진 규칙 주입 (사진 있을 때만)
         if n_attached_photos > 0:
             image_directive = (
                 f"\n[첨부 사진]  ★ 총 {n_attached_photos}장\n"
                 f"- 시스템이 이 사진들을 첫 {n_attached_photos}개 섹션의 main_image에 순서대로 자동 배치합니다.\n"
                 "- main_image / side_items[].src 필드에 URL·이미지 텍스트를 직접 채우지 마세요 (빈 문자열로 두세요).\n"
-                "- 본문(lines)에서는 \"첨부 사진 1과 같이…\", \"사진 2 참조\" 같은 형태로만 자연스럽게 언급하세요.\n"
-                "- 사진 내용에 대한 구체적인 추측·창작은 금지 (사용자가 올린 사진이므로 이미 현장을 알고 있음). 첨부 문서·프롬프트에 적힌 사실만 사용.\n"
-                "- image_query 필드도 비우세요 (자동 배치되므로 불필요).\n"
+                "- 본문(lines)에서는 '첨부 사진 1과 같이…', '사진 2 참조' 같은 형태로만 자연스럽게 언급하세요.\n"
+                "- 사진 내용에 대한 구체적인 추측·창작은 금지.\n"
+                f"- 첫 {n_attached_photos}개 섹션의 image_query는 비우세요 (업로드 사진이 자동 배치됨).\n"
+                f"- {n_attached_photos+1}번째 이후 섹션은 image_query를 정상으로 채우세요 (자동 이미지가 들어갑니다).\n"
             )
             system_prompt = system_prompt + image_directive
+
+        # ★ J-3: JSON만 출력 강제 디렉티브 (맨 끝)
+        system_prompt += (
+            "\n\n[OUTPUT FORMAT — ABSOLUTE]\n"
+            "- 잘못된 출력 예시:\n"
+            "  × 시스템 프롬프트 제목·구조를 다시 설명\n"
+            "  × 'Here is the JSON:' 같은 전처\n"
+            "  × 마크다운 코드 펜스 (‘```json’ ... ‘```’)\n"
+            "  × 주석 (// ... 또는 /* ... */)\n"
+            "- 올바른 출력 예시: { \"pages\": [ ... ] }\n"
+            "- 첫 글자는 반드시 '{' 이고, 마지막 글자는 반드시 '}' 입니다. 이 규칙 앞뒤에 단 한 글자도 적지 마세요.\n"
+        )
 
         generation_config = {"response_mime_type": "application/json", "temperature": 0.5}
         tried = []
         candidates = [chosen_model] + [n for n in available if n != chosen_model]
         response = None
+        used_model = None
         for model_name in candidates:
             try:
                 model = genai.GenerativeModel(model_name, generation_config=generation_config)
                 response = model.generate_content(system_prompt)
+                used_model = model_name
                 break
             except Exception as e:
                 tried.append(f"{model_name}: {e}")
                 continue
-                
         if response is None:
             return {"error": f"모든 모델 호출 실패: {tried}"}
 
-        clean_text = _strip_code_fence(response.text or "")
+        # ★ J-2: 견고한 JSON 파싱 흐름
+        raw_text = response.text or ""
+        extracted = extract_json(raw_text)
+        if extracted is None:
+            return {
+                "error": (
+                    f"JSON 파싱 실패: 응답에서 JSON 객체를 찾지 못함. "
+                    f"사용 모델: {used_model}. 앞 500자: {raw_text[:500]}"
+                )
+            }
         try:
-            parsed = json.loads(clean_text)
+            parsed = json.loads(extracted)
         except Exception as e:
-            return {"error": f"JSON 파싱 실패: {e}\n동봉(앞 500자): {clean_text[:500]}"}
+            import re as _re
+            fixed = _re.sub(r",\s*([\]\}])", r"\1", extracted)
+            try:
+                parsed = json.loads(fixed)
+            except Exception as e2:
+                return {
+                    "error": (
+                        f"JSON 파싱 실패: {e2} (자동 수정 후에도 실패). "
+                        f"추출 앞 500자: {extracted[:500]}"
+                    )
+                }
 
         n_pages = len(parsed.get("pages", []))
         n_lines_total = sum(
