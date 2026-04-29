@@ -1024,13 +1024,12 @@ with st.sidebar:
 # ==========================================
 @st.fragment(run_every="1s")
 def main_content_area(edit_enabled):
-    
-shared_store["active_sessions"][st.session_state.uid] = {
-    "label": my_label,
-    "role": st.session_state.get("user_role", "audience"),
-    "last_seen": time.time(),
-    "voice_connected": st.session_state.get("voice_active_toggle", False),
-}
+    shared_store["active_sessions"][st.session_state.uid] = {
+        "label": my_label,
+        "role": st.session_state.get("user_role", "audience"),
+        "last_seen": time.time(),
+        "voice_connected": st.session_state.get("voice_active_toggle", False),
+    }
 
     with st.expander("실시간 채팅", expanded=False):
         c1, c2 = st.columns([4, 1])
