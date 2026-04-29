@@ -453,32 +453,172 @@ shared_store = get_global_store()
 
 
 # ==========================================
-# 3. 표준 양식
+# 3. 표준 양식 (요청하신 신규 템플릿 적용)
 # ==========================================
 def get_sample_json_guide():
     return {
         "title": "주간 보고 (AI 생성 기반)", "title_fs": 55, "title_color": "#0f172a",
         "pages": [
-            {"tab": "요약", "header": "Executive Summary", "header_fs": 35, "header_color": "#475569",
-             "sections": [{"title": "핵 요약", "title_fs": 32, "title_color": "#1a1c1e", "col_ratio": 1.5,
-                           "main_image": None, "full_width": True, "image_query": "",
-                           "chart_type": "Bar", "chart_data": "",
-                           "lines": [{"text": "• 금주 핵심 성과를 요약합니다.", "size": 24, "color": "#1e293b"},
-                                     {"text": "• 주요 이슈 및 리스크를 점검합니다.", "size": 22, "color": "#1e293b"}],
-                           "side_items": [{"type": "metric", "label": "종합 진행률", "value": "0%", "color": "#007bff", "label_fs": 14, "label_color": "#64748b", "value_fs": 34}]}]},
-            {"tab": "상세 (데이터)", "header": "현황 상세 및 데이터 분석", "header_fs": 35, "header_color": "#475569",
-             "sections": [{"title": "데이터 지표 분석", "title_fs": 32, "title_color": "#1a1c1e", "col_ratio": 1.5,
-                           "main_image": None, "full_width": True, "image_query": "",
-                           "chart_type": "Bar", "chart_data": "1분기, 35\n2분기, 50\n3분기, 42\n4분기, 68",
-                           "lines": [{"text": "• 위 데이터 차트를 통해 실적 추이를 확인할 수 있습니다.", "size": 22, "color": "#1e293b"}],
-                           "side_items": [{"type": "metric", "label": "정량 지표 요약", "value": "목표 달성률: 85%", "color": "#16a34a", "label_fs": 14, "label_color": "#64748b", "value_fs": 22}]}]},
-            {"tab": "액션/리스크", "header": "Action Items & Risks", "header_fs": 35, "header_color": "#475569",
-             "sections": [{"title": "Action Items", "title_fs": 32, "title_color": "#1a1c1e", "col_ratio": 1.5,
-                           "main_image": None, "full_width": True, "image_query": "",
-                           "chart_type": "Bar", "chart_data": "",
-                           "lines": [{"text": "1) [담당/기한] 해결 과제 1", "size": 22, "color": "#1e293b"}],
-                           "side_items": [{"type": "metric", "label": "주요 Blocker", "value": "없음", "color": "#dc2626", "label_fs": 14, "label_color": "#64748b", "value_fs": 26}]}]},
-        ],
+            {
+                "tab": "기존 보고 방식(As-Is)",
+                "header": "기존 대면·수기 보고 체계의 한계(As-Is)",
+                "header_fs": 40,
+                "header_color": "#0f172a",
+                "sections": [
+                    {
+                        "title": "1) 현행 보고 체계의 실태 (AS-IS)",
+                        "title_fs": 28,
+                        "title_color": "#1e293b",
+                        "col_ratio": 1.5,
+                        "main_image": None,
+                        "full_width": True,
+                        "image_query": "",
+                        "chart_type": "Bar",
+                        "chart_data": "",
+                        "lines": [],
+                        "side_items": [
+                            {
+                                "type": "metric",
+                                "label": "○ 수작업 및 문서 중심",
+                                "value": "- 데이터 취합 후 Word, PPT 등 특정 양식에 맞춰 수동으로 재가공하는 방식\n- 본부, 그룹 간 보고양식이 상이해 매번 새로운 보고서를 작성하는 업무 비효율 발생",
+                                "color": "#171718",
+                                "label_fs": 30,
+                                "label_color": "#214892",
+                                "value_fs": 20
+                            },
+                            {
+                                "type": "metric",
+                                "label": "○ 단방향/대면 중심",
+                                "value": "- 완성된 문서를 이메일이나 메신저로 전달하거나, 직접 출력하여 대면으로 보고하는 구조",
+                                "color": "#171718",
+                                "label_fs": 30,
+                                "label_color": "#214892",
+                                "value_fs": 20
+                            }
+                        ]
+                    },
+                    {
+                        "title": "2) 핵심 문제점(Pain Points)",
+                        "title_fs": 28,
+                        "title_color": "#1e293b",
+                        "col_ratio": 1.5,
+                        "main_image": None,
+                        "full_width": True,
+                        "image_query": "",
+                        "chart_type": "Bar",
+                        "chart_data": "",
+                        "lines": [],
+                        "side_items": [
+                            {
+                                "type": "metric",
+                                "label": "○ 작성의 비효율",
+                                "value": "- 내용(Data)에 대한 고민보다 폰트, 여백, 레이아웃 등 '디자인과 형식'을 맞추는 데 전체 보고 준비 시간의 70% 이상을 낭비함",
+                                "color": "#171718",
+                                "label_fs": 30,
+                                "label_color": "#214892",
+                                "value_fs": 20
+                            },
+                            {
+                                "type": "metric",
+                                "label": "○ 의사결정의 지연",
+                                "value": "- 임원진의 일정을 조율하고, 대면 보고를 위해 대기 및 이동하는 물리적 시간이 발생하여 긴급한 사안의 골든타임을 놓칠 우려가 있음",
+                                "color": "#171718",
+                                "label_fs": 30,
+                                "label_color": "#214892",
+                                "value_fs": 20
+                            },
+                            {
+                                "type": "metric",
+                                "label": "○ 정보의 파편화",
+                                "value": "- 보고가 끝난 파일은 개별 담당자의 PC나 이메일에 일회성으로 방치되어, 과거 프로젝트의 인사이트를 검색하거나 데이터로 재활용하기 어려움",
+                                "color": "#171718",
+                                "label_fs": 30,
+                                "label_color": "#214892",
+                                "value_fs": 20
+                            }
+                        ]
+                    },
+                    {
+                        "title": "3) 시사점 및 전환의 필요성 (Why Now?)",
+                        "title_fs": 28,
+                        "title_color": "#1e293b",
+                        "col_ratio": 1.5,
+                        "main_image": None,
+                        "full_width": True,
+                        "image_query": "",
+                        "chart_type": "Bar",
+                        "chart_data": "",
+                        "lines": [],
+                        "side_items": [
+                            {
+                                "type": "metric",
+                                "label": "○ 시사점",
+                                "value": "- 단순한 '문서의 전산화'를 넘어, 데이터가 실시간으로 동기화되고 보고서 작성 과정이 간소화 되는 '디지털 브리핑 환경(To-Be)'으로의 전환이 필요함",
+                                "color": "#171718",
+                                "label_fs": 30,
+                                "label_color": "#214892",
+                                "value_fs": 20
+                            }
+                        ]
+                    }
+                ]
+            },
+            {
+                "tab": "신규 보고체계의 지향점(To-Be)",
+                "header": "데이터 중심의 실시간 보고체계(To-Be)",
+                "header_fs": 40,
+                "header_color": "#0f172a",
+                "sections": [
+                    {
+                        "title": "1) [공간·시간] 물리적 제약을 초월한 'Live Sync' 브리핑 환경",
+                        "title_fs": 28,
+                        "title_color": "#1e293b",
+                        "col_ratio": 1.5,
+                        "main_image": None,
+                        "full_width": True,
+                        "image_query": "",
+                        "chart_type": "Bar",
+                        "chart_data": "",
+                        "lines": [
+                            {
+                                "text": "※ 출처: Gartner (2025), \"Gartner Predicts Over 20% of Workplace Apps Will Use AI-Driven Personalization Algorithms for Adaptive Worker Experiences by 2028\"",
+                                "size": 13,
+                                "color": "#8992a4"
+                            }
+                        ],
+                        "side_items": [
+                            {
+                                "type": "metric",
+                                "label": "○ 핵심 목표",
+                                "value": "- 장소와 시간에 구애받지 않는 비대면 보고 체계 구축",
+                                "color": "#171718",
+                                "label_fs": 30,
+                                "label_color": "#214892",
+                                "value_fs": 20
+                            },
+                            {
+                                "type": "metric",
+                                "label": "○ 상세 내용",
+                                "value": "- 보고자와 수신자가 물리적으로 대면하지 않아도 웹을 통해 동일한 화면을 1초 단위로 실시간 공유\n- 이동 및 대기 시간을 줄여 긴급 현안에 대한 즉각적인 브리핑 및 의사결정 지원",
+                                "color": "#171718",
+                                "label_fs": 30,
+                                "label_color": "#214892",
+                                "value_fs": 20
+                            },
+                            {
+                                "type": "metric",
+                                "label": "○ 기대 가치",
+                                "value": "- ※Gartner에 따르면, 디지털 워크플레이스는 직원이 위치나 기기에 관계없이 정보에 원활하게 접근할 때 생산성이 3배 이상 향상됨을 강조함",
+                                "color": "#171718",
+                                "label_fs": 30,
+                                "label_color": "#214892",
+                                "value_fs": 20
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
     }
 
 
@@ -844,9 +984,12 @@ def generate_json_from_ai(api_key, context_text, requested_pages=None, n_attache
             "- 올바른 예: {\"type\": \"metric\"} — 키와 값 모두 큰따옴표\n"
         )
 
-        generation_config = {"response_mime_type": "application/json", "temperature": 0.5}
+        # 속도 최적화를 위해 시도할 후보 모델을 최대 2개로 제한
+        generation_config = {"response_mime_type": "application/json", "temperature": 0.2}
         tried = []
         candidates = [chosen_model] + [n for n in available if n != chosen_model]
+        candidates = candidates[:2]  # 재시도 너무 많이 하면 지연되므로 최대 2개 모델로 제한
+        
         response = None
         used_model = None
         for model_name in candidates:
