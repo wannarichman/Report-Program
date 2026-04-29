@@ -737,121 +737,99 @@ def _list_gemini_models(api_key):
         return {"error": f"모델 목록 조회 실패: {e}"}
 
 
+def _repair_json(s):
+    """Gemini가 가끔 백틱·작은따옴표·트레일링 콤마로 JSON을 주면 자동 복구."""
+    if not s:
+        return s
+    s = re.sub(r",\s*([\]\}])", r"\1", s)
+    s = re.sub(r"`([^`\n]*?)`", r'"\1"', s)
+    s = re.sub(r"'([^'\n]*?)'(\s*:)", r'"\1"\2', s)
+    return s
+
+
+# ★ 모델 별도 캐싱 (프로세스 내내 1회만 생성)
+@st.cache_resource(show_spinner=False)
+def _get_gemini_model(api_key, model_name):
+    genai.configure(api_key=api_key)
+    return genai.GenerativeModel(
+        model_name,
+        generation_config={"response_mime_type": "application/json", "temperature": 0.5},
+    )
+
+
+TURBO_PREFERRED_MODELS = [
+    "models/gemini-2.5-flash",
+    "models/gemini-2.0-flash",
+    "models/gemini-1.5-flash-latest",
+    "models/gemini-1.5-flash",
+]
+
 
 def generate_json_from_ai(api_key, context_text, requested_pages=None, n_attached_photos=0):
     try:
-        genai.configure(api_key=api_key)
-        available = _list_gemini_models(api_key)
-        if isinstance(available, dict) and "error" in available:
-            return available
-        if not available:
-            return {"error": "이 API 키로 generateContent 가능한 모델이 없습니다."}
-
-        preferred_order = [
-            "gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-001",
-            "gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-1.5-flash-002",
-            "gemini-1.5-pro", "gemini-1.5-pro-latest",
-        ]
-
-        def pick_model(avail_list):
-            short_names = {name.split("/")[-1]: name for name in avail_list}
-            for p in preferred_order:
-                if p in short_names:
-                    return short_names[p]
-            for n in avail_list:
-                if "flash" in n:
-                    return n
-            return avail_list[0]
-
-        chosen_model = pick_model(available)
-
-        now_kst = datetime.now(zoneinfo.ZoneInfo("Asia/Seoul"))
-        today_str = now_kst.strftime("%Y년 %m월 %d일")
-        year_str = now_kst.strftime("%Y")
-        quarter = (now_kst.month - 1) // 3 + 1
-
-        # 외부 그라운딩
-        # ★ S-2: 검색 1회만, 사이드바 토글로 끌 수 있음
-        use_web = st.session_state.get("use_web_search", True)
+        # 1) 외부 검색: 디폴트 OFF (토글 ON일 때만 1회 호출)
+        use_web = st.session_state.get("use_web_search", False)
         web_context = ""
         if use_web:
             search_seed = (context_text or "")[:200].replace("\n", " ").strip()
             if search_seed:
                 web_context = naver_search_text("포스코이앤씨 " + search_seed[:120])
         if not web_context:
-            web_context = "(외부 검색 결과 없음 - 입력 데이터 기반으로만 생성)"
-            
-        # 회사 사실 DB
+            web_context = "(외부 검색 미사용 - 회사 사실 DB + 입력만으로 생성)"
+
+        # 2) 회사 사실 DB
         company_facts = format_facts_for_prompt(load_company_facts())
 
+        # 3) 시간 맥락
+        now_kst = datetime.now(zoneinfo.ZoneInfo("Asia/Seoul"))
+        today_str = now_kst.strftime("%Y\ub144 %m\uc6d4 %d\uc77c")
+        year_str = now_kst.strftime("%Y")
+        quarter = (now_kst.month - 1) // 3 + 1
+
         page_count_directive = (
-            f"\n[페이지 수 제약]\n- pages 배열은 정확히 {requested_pages}개로 만들 것.\n"
+            f"- pages \ubc30\uc5f4\uc740 \uc815\ud655\ud788 {requested_pages}\uac1c.\n"
             if requested_pages else ""
         )
 
-        schema_doc = json.dumps(get_sample_json_guide(), ensure_ascii=False, indent=2)
-
-        # ★ 원본 system_prompt 정의 (빠진 부분 복원)
+        # 4) ★ 슬림 프롬프트 (schema_doc 제거, 핵심 규칙만)
         system_prompt = (
-            f"당신은 포스코이앤씨에서 쓰이는 주간/프로젝트 보고서 JSON 생성기입니다.\n"
-            "입력 데이터를 분석하여 보고서용 JSON을 생성하세요.\n\n"
-            f"[현재 시점]\n- 오늘: {today_str}\n- 연도: {year_str}년 / 분기: {year_str}년 {quarter}분기\n"
-            "- 과거 연도(2024, 2025년)를 '현재'로 표현 금지.\n\n"
-            "[출력 형식]\n- 순수 JSON 하나만 출력 (마크다운/코드펜스 절대 금지).\n"
-            "- 최상위 키: title, title_fs, title_color, pages.\n"
-            "- 각 페이지는 sections 최소 1개. 각 섹션은 lines 최소 2개, side_items 최소 1개.\n"
-            f"{page_count_directive}"
-            f"[JSON 스키마 - 필드 이름만 참고]\n{schema_doc}\n\n"
-            f"[회사 시공현황 사실 DB]  ★ 본문/지표/일정/위치 등을 인용할 때 우선 사용\n{company_facts}\n\n"
-            f"[외부 검색 컨텍스트]  ★ 네이버 뉴스/백과/웹 실시간 결과\n{web_context}\n\n"
-            "[절대 규칙]\n"
-            "1. 환각 금지: 팀명/부서명/인물/프로젝트명/회사명/수치/날짜는 [회사 시공현황 사실 DB] 또는 [외부 검색 컨텍스트] 또는 [입력 데이터]에 명시된 것만 사용.\n"
-            "2. 위 자료에 없는 사실은 비우거나(\"\") 일반적 표현(\"관련 부서\", \"담당자\") 사용. 절대 일반론·추측·창작 금지.\n"
-            "3. chart_data는 실제 수치 있을 때만 '항목, 수치' 줄 형태로 개행구분. 없으면 완전히 빈 문자열.\n"
-            "4. image_query 작성 규칙 (중요):\n"
-            "   - 프로젝트 고유명사 + 핵심 키워드 결합. 예) '청라 하늘대교 사장교 시공', '새만금 남북도로'.\n"
-            "   - 일반 명사 단독 금지: '교량', '건설현장', '공사' ❌.\n"
-            "   - 단서가 없으면 빈 문자열.\n"
-            "5. 표준양식의 플레이스홀더 문구를 그대로 복사 금지.\n\n"
-            f"[입력 데이터]\n{context_text}\n"
+            "\ub2f9\uc2e0\uc740 \ud3ec\uc2a4\ucf54\uc774\uc564\uc528 \uc8fc\uac04/\ud504\ub85c\uc81d\ud2b8 \ubcf4\uace0\uc11c JSON \uc0dd\uc131\uae30\uc785\ub2c8\ub2e4.\n\n"
+            f"[\ud604\uc7ac \uc2dc\uc810] \uc624\ub298: {today_str} ({year_str}\ub144 {quarter}\ubd84\uae30). \uacfc\uac70 \uc5f0\ub3c4\ub97c '\ud604\uc7ac'\ub85c \ud45c\ud604 \uae08\uc9c0.\n\n"
+            "[\ucd9c\ub825 \uaddc\uce59 \u2014 \uc808\ub300]\n"
+            "- \uc21c\uc218 JSON \ud558\ub098\ub9cc \ucd9c\ub825. \ub9c8\ud06c\ub2e4\uc6b4 \ud39c\uc2a4\u00b7\uc124\uba85\u00b7\uc8fc\uc11d \uc77c\uccb4 \uae08\uc9c0.\n"
+            "- \uccab \uae00\uc790 '{', \ub9c8\uc9c0\ub9c9 '}'.\n"
+            "- \ud0a4\uc640 \ubaa8\ub4e0 \ubb38\uc790\uc5f4 \uac12\uc740 \ubc18\ub4dc\uc2dc \ud070\ub530\uc634\ud45c(\")\ub9cc \uc0ac\uc6a9. \ubc31\ud2f1(`)\u00b7\uc791\uc740\ub530\uc634\ud45c(') \uae08\uc9c0.\n"
+            "- \uc798\ubabb: {`type`: \"metric\"} / \uc62c\ubc14\ub984: {\"type\": \"metric\"}\n\n"
+            "[\uc2a4\ud0a4\ub9c8 \u2014 \ud544\uc218 \ud0a4]\n"
+            "- \ucd5c\uc0c1\uc704: title, title_fs, title_color, pages\n"
+            "- pages[].tab, pages[].header, pages[].sections\n"
+            "- sections[].title, sections[].lines (\ucd5c\uc18c 2\uac1c, \uac01 {text,size,color}), sections[].side_items (\ucd5c\uc18c 1\uac1c, {type:'metric',label,value,color}), sections[].image_query, sections[].chart_data, sections[].col_ratio (1.5)\n\n"
+            f"[\ud398\uc774\uc9c0 \uc218]\n{page_count_directive}\n"
+            f"[\ud68c\uc0ac \uc2dc\uacf5\ud604\ud669 \uc0ac\uc2e4 DB]\n{company_facts}\n\n"
+            f"[\uc678\ubd80 \uac80\uc0c9]\n{web_context}\n\n"
+            "[\uaddc\uce59]\n"
+            "1. \ud658\uac01 \uae08\uc9c0: \ud300\uba85/\uc778\ubb3c/\uc218\uce58/\ub0a0\uc9dc\ub294 \uc704 \uc790\ub8cc\uc640 \uc785\ub825 \ub370\uc774\ud130\uc5d0 \uc788\ub294 \uac83\ub9cc \uc0ac\uc6a9.\n"
+            "2. \uc5c6\ub294 \uc0ac\uc2e4\uc740 \ube44\uc6b0\uac70\ub098 \uc77c\ubc18 \ud45c\ud604(\uadf8\ub9b0 \"\uad00\ub828 \ubd80\uc11c\"). \ucc3d\uc791 \uae08\uc9c0.\n"
+            "3. chart_data: \uc218\uce58 \uc788\uc744 \ub54c\ub9cc '\ud56d\ubaa9, \uc218\uce58' \uac1c\ud589 \ub098\uc5f4. \uc5c6\uc73c\uba74 \"\".\n"
+            "4. image_query: \ud504\ub85c\uc81d\ud2b8 \uace0\uc720\uba85\uc0ac + \ud575\uc2ec\uc5b4 (\uc608: '\uccad\ub77c \ud558\ub298\ub300\uad50 \uc0ac\uc7a5\uad50 \uc2dc\uacf5'). \uc77c\ubc18\uba85\uc0ac \ub2e8\ub3c5 \uae08\uc9c0.\n"
+            f"\n[\uc785\ub825]\n{context_text}\n"
         )
 
-        # ★ J-4: 첨부 사진 규칙 주입 (사진 있을 때만)
+        # 5) 체부 사진 디렉티브 (있을 때만)
         if n_attached_photos > 0:
-            image_directive = (
-                f"\n[첨부 사진]  ★ 총 {n_attached_photos}장\n"
-                f"- 시스템이 이 사진들을 첫 {n_attached_photos}개 섹션의 main_image에 순서대로 자동 배치합니다.\n"
-                "- main_image / side_items[].src 필드에 URL·이미지 텍스트를 직접 채우지 마세요 (빈 문자열로 두세요).\n"
-                "- 본문(lines)에서는 '첨부 사진 1과 같이…', '사진 2 참조' 같은 형태로만 자연스럽게 언급하세요.\n"
-                "- 사진 내용에 대한 구체적인 추측·창작은 금지.\n"
-                f"- 첫 {n_attached_photos}개 섹션의 image_query는 비우세요 (업로드 사진이 자동 배치됨).\n"
-                f"- {n_attached_photos+1}번째 이후 섹션은 image_query를 정상으로 채우세요 (자동 이미지가 들어갑니다).\n"
+            system_prompt += (
+                f"\n[\ucca8\ubd80 \uc0ac\uc9c4 {n_attached_photos}\uc7a5]\n"
+                f"- \uccab {n_attached_photos}\uac1c \uc139\uc158\uc758 main_image\ub294 \uc790\ub3d9 \ubc30\uce58\ub428. image_query\ub294 \ube48 \ubb38\uc790\uc5f4.\n"
+                f"- {n_attached_photos+1}\ubc88\uc9f8 \uc774\ud6c4 \uc139\uc158\uc740 image_query \uc815\uc0c1 \uc785\ub825.\n"
             )
-            system_prompt = system_prompt + image_directive
 
-        # ★ J-3: JSON만 출력 강제 디렉티브 (맨 끝)
-        system_prompt += (
-            "\n\n[OUTPUT FORMAT — ABSOLUTE]\n"
-            "- 잘못된 출력 예시:\n"
-            "  × 시스템 프롬프트 제목·구조를 다시 설명\n"
-            "  × 'Here is the JSON:' 같은 전처\n"
-            "  × 마크다운 코드 펜스 ('```json' ... '```')\n"
-            "  × 주석 (// ... 또는 /* ... */)\n"
-            "- 올바른 출력 예시: { \"pages\": [ ... ] }\n"
-            "- 첫 글자는 반드시 '{' 이고, 마지막 글자는 반드시 '}' 입니다. 이 규칙 앞뒤에 단 한 글자도 적지 마세요.\n"
-            "- JSON 키와 모든 문자열 값은 반드시 큰따옴표(\")로만 감싸세요. 백틱(`)이나 작은따옴표(')로 감싸는 것은 절대 금지입니다.\n"
-            "- 잘못된 예: {`type`: \"metric\"} — 키가 백틱\n"
-            "- 올바른 예: {\"type\": \"metric\"} — 키와 값 모두 큰따옴표\n"
-        )
-
-        generation_config = {"response_mime_type": "application/json", "temperature": 0.5}
+        # 6) ★ 모델 호출 (list_models 제거, 선호 모델 순차 호출)
         tried = []
-        candidates = [chosen_model] + [n for n in available if n != chosen_model]
         response = None
         used_model = None
-        for model_name in candidates:
+        for model_name in TURBO_PREFERRED_MODELS:
             try:
-                model = genai.GenerativeModel(model_name, generation_config=generation_config)
+                model = _get_gemini_model(api_key, model_name)
                 response = model.generate_content(system_prompt)
                 used_model = model_name
                 break
@@ -859,31 +837,29 @@ def generate_json_from_ai(api_key, context_text, requested_pages=None, n_attache
                 tried.append(f"{model_name}: {e}")
                 continue
         if response is None:
-            return {"error": f"모든 모델 호출 실패: {tried}"}
+            return {"error": f"\ubaa8\ub4e0 \ubaa8\ub378 \ud638\ucd9c \uc2e4\ud328: {tried}"}
 
-        # ★ J-2: 견고한 JSON 파싱 흐름
+        # 7) 파싱
         raw_text = response.text or ""
         extracted = extract_json(raw_text)
         if extracted is None:
             return {
                 "error": (
-                    f"JSON 파싱 실패: 응답에서 JSON 객체를 찾지 못함. "
-                    f"사용 모델: {used_model}. 앞 500자: {raw_text[:500]}"
+                    f"JSON \ud30c\uc2f1 \uc2e4\ud328: \uc751\ub2f5\uc5d0\uc11c JSON \uac1d\uccb4\ub97c \ucc3e\uc9c0 \ubabb\ud568. "
+                    f"\uc0ac\uc6a9 \ubaa8\ub378: {used_model}. \uc55e 500\uc790: {raw_text[:500]}"
                 )
             }
         try:
             parsed = json.loads(extracted)
         except Exception:
-            # 1차 복구: 백틱·작은따옴표·트레일링 콤마 자동 수정
             fixed = _repair_json(extracted)
             try:
                 parsed = json.loads(fixed)
             except Exception as e2:
                 return {
                     "error": (
-                        f"JSON 파싱 실패: {e2} (자동 수정 후에도 실패). "
-                        f"추출 앞 500자: {extracted[:500]}\n"
-                        f"복구 앞 500자: {fixed[:500]}"
+                        f"JSON \ud30c\uc2f1 \uc2e4\ud328: {e2} (\uc790\ub3d9 \uc218\uc815 \ud6c4\uc5d0\ub3c4 \uc2e4\ud328). "
+                        f"\ucd94\ucd9c \uc55e 500\uc790: {extracted[:500]}"
                     )
                 }
 
@@ -894,11 +870,12 @@ def generate_json_from_ai(api_key, context_text, requested_pages=None, n_attache
             for s in p.get("sections", [])
         )
         if n_pages == 0 or n_lines_total == 0:
-            return {"error": "모델이 빈 보고서를 돌려주었습니다. 입력을 더 자세히 적어주세요."}
+            return {"error": "\ubaa8\ub378\uc774 \ube48 \ubcf4\uace0\uc11c\ub97c \ub3cc\ub824\uc8fc\uc5c8\uc2b5\ub2c8\ub2e4. \uc785\ub825\uc744 \ub354 \uc790\uc138\ud788 \uc801\uc5b4\uc8fc\uc138\uc694."}
         return parsed
 
     except Exception as e:
         return {"error": str(e)}
+
 
 # ==========================================
 # 5-1. 입장 게이트 (역할 선택 + 이름 입력)
@@ -1196,12 +1173,12 @@ with st.sidebar:
                 ai_api_key = ""
                 st.warning("GEMINI_API_KEY 설정 필요")
 
-            st.toggle(
-                "🌐 외부 웹 검색 사용 (네이버)",
-                value=True,
-                key="use_web_search",
-                help="끄면 외부 검색 없이 회사 사실 DB + 입력 데이터만으로 즉시 생성합니다 (가장 빠름).",
-            )
+st.toggle(
+    "🌐 외부 웹 검색 사용 (그라운딩)",
+    value=False,
+    key="use_web_search",
+    help="켜면 네이버 뉴스/백과/웹 검색 결과를 프롬프트에 추가 (+2~3초). 일반적으로는 회사 사실 DB만으로 생성.",
+)
             
             ai_text_input = st.text_area(
                 "프롬프트 / 설명",
