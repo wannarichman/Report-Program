@@ -1,3 +1,7 @@
+# -*- coding: utf-8 -*-
+"""Report.py — AI Live Sync Master Builder (v4 전체 정상본)
+원본 v1의 모든 기능 보존 + v3 개선(A/B/C1/C2)
+"""
 import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
@@ -12,7 +16,11 @@ import google.generativeai as genai
 from datetime import datetime
 import zoneinfo
 import re
+import struct
+import zipfile
+import xml.etree.ElementTree as ET
 from io import BytesIO
+from pathlib import Path
 
 try:
     from pypdf import PdfReader
@@ -20,19 +28,23 @@ try:
 except Exception:
     HAS_PYPDF = False
 
-MAX_DOC_CHARS = 30000  # 무료 모델 토큰 보호용
+MAX_DOC_CHARS = 30000
+COMPANY_FACTS_PATH = "posco_projects.json"
+SQ = chr(39)  # 작은따옴표. f-string 내 이스케이프 회피용
+ERROR_IMG = "https://placehold.co/800x400/f8fafc/94a3b8?text=Image+Not+Found"
 
 
 # ==========================================
-# 0. 유틸: 코드펜스 제거 / 페이지 수 추출
+# 0. 유틸
 # ==========================================
 def _strip_code_fence(text):
     t = (text or "").strip()
-    if t.startswith("```"):
+    fence = "`" * 3
+    if t.startswith(fence):
         nl = t.find("\n")
         if nl != -1:
             t = t[nl + 1:]
-        if t.endswith("```"):
+        if t.endswith(fence):
             t = t[:-3]
     return t.strip()
 
@@ -52,11 +64,11 @@ def extract_requested_page_count(text):
 
 
 # ==========================================
-# 0-1. 포맷별 텍스트 추출 헬퍼
+# 0-1. 포맷별 텍스트 추출
 # ==========================================
-def _extract_pdf(raw):
+def extract_pdf(raw):
     if not HAS_PYPDF:
-        return "[오류] pypdf 미설치 (requirements.txt에 pypdf>=4.0.0 추가)"
+        return "[오류] pypdf 미설치"
     try:
         reader = PdfReader(BytesIO(raw))
         out = []
@@ -73,11 +85,11 @@ def _extract_pdf(raw):
         return f"[PDF 파싱 오류] {e}"
 
 
-def _extract_pptx(raw):
+def extract_pptx(raw):
     try:
         from pptx import Presentation
     except ImportError:
-        return "[오류] python-pptx 미설치 (requirements.txt에 python-pptx 추가)"
+        return "[오류] python-pptx 미설치"
     try:
         prs = Presentation(BytesIO(raw))
         out = []
@@ -109,11 +121,11 @@ def _extract_pptx(raw):
         return f"[PPTX 파싱 오류] {e}"
 
 
-def _extract_docx(raw):
+def extract_docx(raw):
     try:
         from docx import Document
     except ImportError:
-        return "[오류] python-docx 미설치 (requirements.txt에 python-docx 추가)"
+        return "[오류] python-docx 미설치"
     try:
         doc = Document(BytesIO(raw))
         out = []
@@ -130,9 +142,7 @@ def _extract_docx(raw):
         return f"[DOCX 파싱 오류] {e}"
 
 
-def _extract_hwpx(raw):
-    import zipfile
-    import xml.etree.ElementTree as ET
+def extract_hwpx(raw):
     try:
         out = []
         with zipfile.ZipFile(BytesIO(raw)) as zf:
@@ -157,13 +167,12 @@ def _extract_hwpx(raw):
         return f"[HWPX 파싱 오류] {e}"
 
 
-def _extract_hwp(raw):
+def extract_hwp(raw):
     try:
         import olefile
         import zlib
-        import struct
     except ImportError:
-        return "[오류] olefile 미설치 (requirements.txt에 olefile 추가)"
+        return "[오류] olefile 미설치"
     try:
         ole = olefile.OleFileIO(BytesIO(raw))
         is_compressed = True
@@ -227,28 +236,23 @@ def extract_text_from_upload(uploaded_file):
         return ""
     name = (uploaded_file.name or "").lower()
     raw = uploaded_file.getvalue()
-
     if name.endswith(".pdf"):
-        text = _extract_pdf(raw)
+        text = extract_pdf(raw)
     elif name.endswith(".pptx"):
-        text = _extract_pptx(raw)
+        text = extract_pptx(raw)
     elif name.endswith(".ppt"):
-        text = (
-            "[알림] .ppt(구버전) 형식은 직접 파싱이 제한됩니다. "
-            "PowerPoint에서 '다른 이름으로 저장 → .pptx' 후 다시 업로드해 주세요."
-        )
+        text = "[알림] .ppt(구버전) 형식은 직접 파싱이 제한됩니다. PowerPoint에서 '다른 이름으로 저장 → .pptx' 후 다시 업로드해 주세요."
     elif name.endswith(".docx"):
-        text = _extract_docx(raw)
+        text = extract_docx(raw)
     elif name.endswith(".hwpx"):
-        text = _extract_hwpx(raw)
+        text = extract_hwpx(raw)
     elif name.endswith(".hwp"):
-        text = _extract_hwp(raw)
+        text = extract_hwp(raw)
     else:
         try:
             text = raw.decode("utf-8", errors="ignore")
         except Exception:
             text = str(raw)
-
     return (text or "")[:MAX_DOC_CHARS]
 
 
@@ -301,14 +305,14 @@ def get_sample_json_guide():
         "pages": [
             {"tab": "요약", "header": "Executive Summary", "header_fs": 35, "header_color": "#475569",
              "sections": [{"title": "핵심 요약", "title_fs": 32, "title_color": "#1a1c1e", "col_ratio": 1.5,
-                           "main_image": None, "full_width": True, "image_query": "business meeting",
+                           "main_image": None, "full_width": True, "image_query": "",
                            "chart_type": "Bar", "chart_data": "",
                            "lines": [{"text": "• 금주 핵심 성과를 요약합니다.", "size": 24, "color": "#1e293b"},
                                      {"text": "• 주요 이슈 및 리스크를 점검합니다.", "size": 22, "color": "#1e293b"}],
                            "side_items": [{"type": "metric", "label": "종합 진행률", "value": "0%", "color": "#007bff", "label_fs": 14, "label_color": "#64748b", "value_fs": 34}]}]},
             {"tab": "상세 (데이터)", "header": "현황 상세 및 데이터 분석", "header_fs": 35, "header_color": "#475569",
              "sections": [{"title": "데이터 지표 분석", "title_fs": 32, "title_color": "#1a1c1e", "col_ratio": 1.5,
-                           "main_image": None, "full_width": True, "image_query": "business analytics chart",
+                           "main_image": None, "full_width": True, "image_query": "",
                            "chart_type": "Bar", "chart_data": "1분기, 35\n2분기, 50\n3분기, 42\n4분기, 68",
                            "lines": [{"text": "• 위 데이터 차트를 통해 실적 추이를 확인할 수 있습니다.", "size": 22, "color": "#1e293b"}],
                            "side_items": [{"type": "metric", "label": "정량 지표 요약", "value": "목표 달성률: 85%", "color": "#16a34a", "label_fs": 14, "label_color": "#64748b", "value_fs": 22}]}]},
@@ -403,9 +407,10 @@ def adapt_json_format(raw_data):
 
 
 # ==========================================
-# 4. 외부 정보 수집 (네이버 검색)
+# 4. 외부 정보 수집 (네이버 검색)  ★ v3 (A) 강화
 # ==========================================
 def naver_search_text(query, max_results=5):
+    """뉴스(최신순) + 백과 + 웹 멀티 소스 통합 그라운딩."""
     try:
         cid = st.secrets.get("NAVER_CLIENT_ID", "")
         csec = st.secrets.get("NAVER_CLIENT_SECRET", "")
@@ -413,27 +418,36 @@ def naver_search_text(query, max_results=5):
             return ""
         headers = {"X-Naver-Client-Id": cid, "X-Naver-Client-Secret": csec}
         snippets = []
-        for endpoint in ["news.json", "encyc.json", "webkr.json"]:
+        endpoints = [
+            ("news.json", {"sort": "date"}),
+            ("encyc.json", {"sort": "sim"}),
+            ("webkr.json", {"sort": "sim"}),
+        ]
+        for endpoint, extra in endpoints:
             try:
+                params = {"query": query, "display": max_results}
+                params.update(extra)
                 r = requests.get(
                     "https://openapi.naver.com/v1/search/" + endpoint,
-                    params={"query": query, "display": max_results, "sort": "sim"},
-                    headers=headers, timeout=5,
+                    params=params, headers=headers, timeout=5,
                 )
                 if r.status_code == 200:
                     for item in r.json().get("items", []):
-                        title = item.get("title", "").replace("<b>", "").replace("</b>", "")
-                        desc = item.get("description", "").replace("<b>", "").replace("</b>", "")
+                        title = re.sub(r"<[^>]+>", "", item.get("title", ""))
+                        desc = re.sub(r"<[^>]+>", "", item.get("description", ""))
                         link = item.get("link", "")
-                        snippets.append(f"- [{title}] {desc} (출처: {link})")
+                        pub = item.get("pubDate", "")
+                        tag = endpoint.split(".")[0]
+                        snippets.append(f"- [{tag}/{pub}] {title}: {desc} (출처: {link})")
             except Exception:
                 continue
-        return "\n".join(snippets[:15])
+        return "\n".join(snippets[:20])
     except Exception:
         return ""
 
 
 def naver_search_image(query):
+    """★ v3 (C2): query 핵심어가 결과 제목에 포함된 이미지를 우선 채택. 없으면 1순위 폴백."""
     try:
         cid = st.secrets.get("NAVER_CLIENT_ID", "")
         csec = st.secrets.get("NAVER_CLIENT_SECRET", "")
@@ -441,15 +455,21 @@ def naver_search_image(query):
             return ""
         r = requests.get(
             "https://openapi.naver.com/v1/search/image",
-            params={"query": query, "display": 5, "sort": "sim", "filter": "large"},
+            params={"query": query, "display": 10, "sort": "sim", "filter": "large"},
             headers={"X-Naver-Client-Id": cid, "X-Naver-Client-Secret": csec},
             timeout=5,
         )
-        if r.status_code == 200:
-            items = r.json().get("items", [])
-            if items:
-                return items[0].get("link", "")
-        return ""
+        if r.status_code != 200:
+            return ""
+        items = r.json().get("items", [])
+        if not items:
+            return ""
+        keywords = [w for w in re.split(r"\s+", query.strip()) if len(w) >= 2]
+        for it in items:
+            title = re.sub(r"<[^>]+>", "", it.get("title", "")).lower()
+            if any(k.lower() in title for k in keywords):
+                return it.get("link", "")
+        return items[0].get("link", "")
     except Exception:
         return ""
 
@@ -488,7 +508,40 @@ def render_image_src(img_val):
 
 
 # ==========================================
-# 5. AI 텍스트 -> JSON
+# 4-1. 회사 시공현황 사실 DB  ★ v3 (B) 신규
+# ==========================================
+DEFAULT_COMPANY_FACTS = [
+    {"name": "청라-영종 하늘대교", "type": "해상교량", "location": "인천 청라~영종", "status": "시공중", "completion": "2027", "scale": "총연장 약 4.05km, 사장교 구간 포함"},
+    {"name": "새만금 남북도로 2단계", "type": "도로", "location": "전북 새만금", "status": "시공중"},
+    {"name": "송도 R3 블록", "type": "공동주택", "location": "인천 송도국제도시", "status": "분양/시공"},
+    {"name": "광양 LNG 터미널", "type": "플랜트/에너지", "location": "전남 광양", "status": "시공중"},
+    {"name": "포항 이차전지 소재 공장", "type": "산업플랜트", "location": "경북 포항", "status": "시공중"},
+]
+
+
+def load_company_facts():
+    p = Path(COMPANY_FACTS_PATH)
+    if p.exists():
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            return DEFAULT_COMPANY_FACTS
+    return DEFAULT_COMPANY_FACTS
+
+
+def format_facts_for_prompt(facts):
+    lines = []
+    for f in facts:
+        parts = [f"- {f.get('name', '')}"]
+        for k in ("type", "location", "status", "completion", "scale"):
+            if f.get(k):
+                parts.append(f"{k}={f[k]}")
+        lines.append(" | ".join(parts))
+    return "\n".join(lines)
+
+
+# ==========================================
+# 5. AI 텍스트 -> JSON  ★ v3 (B + C1) 강화
 # ==========================================
 def generate_json_from_ai(api_key, context_text, requested_pages=None):
     try:
@@ -527,6 +580,7 @@ def generate_json_from_ai(api_key, context_text, requested_pages=None):
         year_str = now_kst.strftime("%Y")
         quarter = (now_kst.month - 1) // 3 + 1
 
+        # ★ (A) 강화: 두 쿼리로 폭넓게 그라운딩
         search_seed = (context_text or "")[:200].replace("\n", " ").strip()
         web_context_parts = []
         if search_seed:
@@ -536,6 +590,9 @@ def generate_json_from_ai(api_key, context_text, requested_pages=None):
         if not web_context:
             web_context = "(외부 검색 결과 없음 - 입력 데이터 기반으로만 생성)"
 
+        # ★ (B) 신규: 회사 시공현황 사실 DB
+        company_facts = format_facts_for_prompt(load_company_facts())
+
         page_count_directive = (
             f"\n[페이지 수 제약]\n- pages 배열은 정확히 {requested_pages}개로 만들 것.\n"
             if requested_pages else ""
@@ -543,35 +600,31 @@ def generate_json_from_ai(api_key, context_text, requested_pages=None):
 
         schema_doc = json.dumps(get_sample_json_guide(), ensure_ascii=False, indent=2)
 
-        system_prompt = f"""당신은 포스코이앤씨에서 쓰이는 주간/프로젝트 보고서 JSON 생성기입니다.
-입력 데이터를 분석하여 보고서용 JSON을 생성하세요.
-
-[현재 시점]
-- 오늘: {today_str}
-- 연도: {year_str}년 / 분기: {year_str}년 {quarter}분기
-- 과거 연도(2024, 2025년)를 "현재"로 표현 금지.
-
-[출력 형식]
-- 순수 JSON 하나만 출력 (마크다운/코드펜스 절대 금지).
-- 최상위 키: title, title_fs, title_color, pages.
-- 각 페이지는 sections 최소 1개. 각 섹션은 lines 최소 2개, side_items 최소 1개.
-{page_count_directive}
-[JSON 스키마 - 필드 이름만 참고]
-{schema_doc}
-
-[외부 검색 컨텍스트]
-{web_context}
-
-[절대 규칙]
-1. 환각 금지: 팀명/부서명/인물/프로젝트명/회사명/수치/날짜는 입력 데이터 또는 검색 컨텍스트에 명시된 것만 사용.
-2. 정보가 부족하면 비우거나("") 일반적 표현("관련 부서", "담당자") 사용.
-3. chart_data는 실제 수치 있을 때만 "항목, 수치\\n항목, 수치" 형태. 없으면 "".
-4. image_query는 영어 1~3단어 (한글 금지). 추상어("report", "summary", "data") 금지. 단서 없으면 "".
-5. 표준양식의 플레이스홀더 문구를 그대로 복사 금지. 입력 데이터 기반으로 재작성.
-
-[입력 데이터]
-{context_text}
-"""
+        # ★ (C1) 강화: image_query 규칙을 고유명사+핵심어 강제로 변경
+        system_prompt = (
+            f"당신은 포스코이앤씨에서 쓰이는 주간/프로젝트 보고서 JSON 생성기입니다.\n"
+            "입력 데이터를 분석하여 보고서용 JSON을 생성하세요.\n\n"
+            f"[현재 시점]\n- 오늘: {today_str}\n- 연도: {year_str}년 / 분기: {year_str}년 {quarter}분기\n"
+            "- 과거 연도(2024, 2025년)를 '현재'로 표현 금지.\n\n"
+            "[출력 형식]\n- 순수 JSON 하나만 출력 (마크다운/코드펜스 절대 금지).\n"
+            "- 최상위 키: title, title_fs, title_color, pages.\n"
+            "- 각 페이지는 sections 최소 1개. 각 섹션은 lines 최소 2개, side_items 최소 1개.\n"
+            f"{page_count_directive}"
+            f"[JSON 스키마 - 필드 이름만 참고]\n{schema_doc}\n\n"
+            f"[회사 시공현황 사실 DB]  ★ 본문/지표/일정/위치 등을 인용할 때 우선 사용\n{company_facts}\n\n"
+            f"[외부 검색 컨텍스트]  ★ 네이버 뉴스/백과/웹 실시간 결과\n{web_context}\n\n"
+            "[절대 규칙]\n"
+            "1. 환각 금지: 팀명/부서명/인물/프로젝트명/회사명/수치/날짜는 [회사 시공현황 사실 DB] 또는 [외부 검색 컨텍스트] 또는 [입력 데이터]에 명시된 것만 사용.\n"
+            "2. 위 자료에 없는 사실은 비우거나(\"\") 일반적 표현(\"관련 부서\", \"담당자\") 사용. 절대 일반론·추측·창작 금지.\n"
+            "3. chart_data는 실제 수치 있을 때만 '항목, 수치' 줄 형태로 개행구분. 없으면 완전히 빈 문자열.\n"
+            "4. image_query 작성 규칙 (중요):\n"
+            "   - 프로젝트 고유명사 + 핵심 키워드 결합. 예) '청라 하늘대교 사장교 시공', '새만금 남북도로', 'Cheongna Sky Bridge construction'.\n"
+            "   - 일반 명사 단독 금지: '교량', '건설현장', '공사', 'report', 'summary', 'data' 등 ❌.\n"
+            "   - 한국 프로젝트/지명은 한글, 글로벌 키워드는 영문도 허용.\n"
+            "   - 단서가 없으면 빈 문자열.\n"
+            "5. 표준양식의 플레이스홀더 문구를 그대로 복사 금지. 입력 데이터 + 검색 컨텍스트 + 회사 사실 DB 기반으로 재작성.\n\n"
+            f"[입력 데이터]\n{context_text}\n"
+        )
 
         generation_config = {"response_mime_type": "application/json", "temperature": 0.5}
         tried = []
@@ -629,11 +682,11 @@ def agora_voice_system(app_id, channel, user_label):
     custom_html = """
 <script src="https://download.agora.io/sdk/release/AgoraRTC_N-4.11.0.js"></script>
 <div class="voice-panel">
-  <div id="v-status" style="font-size:13px; font-weight:700; margin-bottom:8px; color:#1e293b;">🎙 __USER_LABEL__</div>
-  <div style="width:100%; height:10px; background:#e2e8f0; border-radius:5px; margin-bottom:12px; overflow:hidden;">
-    <div id="level-bar" style="width:0%; height:100%; background:#28a745; transition:width 0.05s;"></div>
-  </div>
-  <button id="mute" class="btn-mute">🎤 마이크 : 켜짐</button>
+    <div id="v-status" style="font-size:13px; font-weight:700; margin-bottom:8px; color:#1e293b;">🎙 USER_LABEL</div>
+    <div style="width:100%; height:10px; background:#e2e8f0; border-radius:5px; margin-bottom:12px; overflow:hidden;">
+        <div id="level-bar" style="width:0%; height:100%; background:#28a745; transition:width 0.05s;"></div>
+    </div>
+    <button id="mute" class="btn-mute">🎤 마이크 : 켜짐</button>
 </div>
 <script>
 let client = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
@@ -641,40 +694,40 @@ let localTracks = { audioTrack: null };
 let isMuted = false;
 
 async function join() {
-  try {
-    await client.join("__APP_ID__", "__CHANNEL__", null, null);
-    localTracks.audioTrack = await AgoraRTC.createMicrophoneAudioTrack();
-    await client.publish([localTracks.audioTrack]);
-    client.enableAudioVolumeIndicator();
-    client.on("volume-indicator", (vs) => {
-      vs.forEach((v) => {
-        if (v.uid === 0 && !isMuted) {
-          document.getElementById("level-bar").style.width = Math.min(v.level * 2, 100) + "%";
-        }
-        if (isMuted) {
-          document.getElementById("level-bar").style.width = "0%";
-        }
-      });
-    });
-    client.on("user-published", async (u, m) => {
-      await client.subscribe(u, m);
-      if (m === "audio") u.audioTrack.play();
-    });
-  } catch (e) { console.error(e); }
+    try {
+        await client.join("APP_ID", "CHANNEL", null, null);
+        localTracks.audioTrack = await AgoraRTC.createMicrophoneAudioTrack();
+        await client.publish([localTracks.audioTrack]);
+        client.enableAudioVolumeIndicator();
+        client.on("volume-indicator", (vs) => {
+            vs.forEach((v) => {
+                if (v.uid === 0 && !isMuted) {
+                    document.getElementById("level-bar").style.width = Math.min(v.level * 2, 100) + "%";
+                }
+                if (isMuted) {
+                    document.getElementById("level-bar").style.width = "0%";
+                }
+            });
+        });
+        client.on("user-published", async (u, m) => {
+            await client.subscribe(u, m);
+            if (m === "audio") u.audioTrack.play();
+        });
+    } catch (e) { console.error(e); }
 }
 
 function toggleMute() {
-  if (!localTracks.audioTrack) return;
-  isMuted = !isMuted;
-  localTracks.audioTrack.setEnabled(!isMuted);
-  const btn = document.getElementById("mute");
-  if (isMuted) {
-    btn.innerText = "🔇 마이크 : 꺼짐";
-    btn.classList.add("active");
-  } else {
-    btn.innerText = "🎤 마이크 : 켜짐";
-    btn.classList.remove("active");
-  }
+    if (!localTracks.audioTrack) return;
+    isMuted = !isMuted;
+    localTracks.audioTrack.setEnabled(!isMuted);
+    const btn = document.getElementById("mute");
+    if (isMuted) {
+        btn.innerText = "🔇 마이크 : 꺼짐";
+        btn.classList.add("active");
+    } else {
+        btn.innerText = "🎤 마이크 : 켜짐";
+        btn.classList.remove("active");
+    }
 }
 
 join();
@@ -683,9 +736,9 @@ document.getElementById("mute").onclick = toggleMute;
 """
     custom_html = (
         custom_html
-        .replace("__APP_ID__", app_id)
-        .replace("__CHANNEL__", channel)
-        .replace("__USER_LABEL__", user_label)
+        .replace("APP_ID", app_id)
+        .replace("CHANNEL", channel)
+        .replace("USER_LABEL", user_label)
     )
     components.html(custom_html, height=160)
 
@@ -736,9 +789,7 @@ with st.sidebar:
             except Exception:
                 ai_api_key = ""
                 st.warning("GEMINI_API_KEY 설정 필요")
-            ai_text_input = st.text_area(
-                "텍스트 데이터 입력 (예: '5페이지로 안전 보고서 만들어줘. ...')"
-            )
+            ai_text_input = st.text_area("텍스트 데이터 입력 (예: '5페이지로 안전 보고서 만들어줘. ...')")
             ai_file_input = st.file_uploader(
                 "또는 문서 업로드 (PDF / PPTX / DOCX / HWP / HWPX / TXT / CSV / MD)",
                 type=["pdf", "pptx", "ppt", "docx", "hwp", "hwpx", "txt", "csv", "md"],
@@ -759,14 +810,14 @@ with st.sidebar:
                         req_pages = extract_requested_page_count(ai_text_input)
                         with st.spinner("생성 중..." + (f" ({req_pages}페이지로)" if req_pages else "")):
                             ai_result = generate_json_from_ai(ai_api_key, context, requested_pages=req_pages)
-                            if "error" in ai_result:
-                                st.error(f"생성 실패: {ai_result['error']}")
-                            else:
-                                shared_store["report_data"] = adapt_json_format(ai_result)
-                                shared_store["current_page"] = 0
-                                st.success("완료!")
-                                time.sleep(1)
-                                st.rerun()
+                        if "error" in ai_result:
+                            st.error(f"생성 실패: {ai_result['error']}")
+                        else:
+                            shared_store["report_data"] = adapt_json_format(ai_result)
+                            shared_store["current_page"] = 0
+                            st.success("완료!")
+                            time.sleep(1)
+                            st.rerun()
 
         st.write("---")
         st.download_button(
@@ -805,9 +856,6 @@ with st.sidebar:
 # ==========================================
 # 8. 메인 브리핑 엔진
 # ==========================================
-ERROR_IMG = "https://placehold.co/800x400/f8fafc/94a3b8?text=Image+Not+Found"
-
-
 @st.fragment(run_every="1s")
 def main_content_area(edit_enabled):
     shared_store["active_sessions"][st.session_state.uid] = {
@@ -881,12 +929,12 @@ def main_content_area(edit_enabled):
         )
 
     if edit_enabled:
-        p["tab"] = st.text_input("탭 이름", p.get("tab", ""), key=f"tab_edit_{cp_idx}")
+        p["tab"] = st.text_input("탭 이름", p.get("tab", ""), key=f"tab_edit{cp_idx}")
         with st.expander("소제목 설정"):
-            p["header"] = st.text_input("소제목", p.get("header", ""), key=f"ph_input_{cp_idx}")
+            p["header"] = st.text_input("소제목", p.get("header", ""), key=f"ph_input{cp_idx}")
             hc1, hc2 = st.columns(2)
-            p["header_fs"] = hc1.slider("크기", 10, 150, int(p.get("header_fs", 35)), key=f"phfs_{cp_idx}")
-            p["header_color"] = hc2.color_picker("색상", p.get("header_color", "#475569"), key=f"phc_{cp_idx}")
+            p["header_fs"] = hc1.slider("크기", 10, 150, int(p.get("header_fs", 35)), key=f"phfs{cp_idx}")
+            p["header_color"] = hc2.color_picker("색상", p.get("header_color", "#475569"), key=f"phc{cp_idx}")
 
     st.markdown(
         f'<h2 style="text-align:center; font-size:{p.get("header_fs", 35)}px; color:{p.get("header_color", "#475569")}; margin-bottom:30px;">{p.get("header", "")}</h2>',
@@ -894,7 +942,7 @@ def main_content_area(edit_enabled):
     )
 
     sections = p.setdefault("sections", [])
-    if edit_enabled and st.button("섹션 추가", key=f"add_sec_btn_{cp_idx}"):
+    if edit_enabled and st.button("섹션 추가", key=f"add_sec_btn{cp_idx}"):
         sections.append({
             "title": "새 섹션", "title_fs": 32, "title_color": "#1a1c1e", "col_ratio": 1.5,
             "lines": [{"text": "내용", "size": 22, "color": "#1e293b"}],
@@ -907,11 +955,11 @@ def main_content_area(edit_enabled):
         with st.container(border=True):
             if edit_enabled:
                 sc1, sc2, sc3, sc4, sc5 = st.columns([2.5, 0.8, 0.8, 1.2, 0.5])
-                sec["title"] = sc1.text_input("섹션 제목", sec.get("title", ""), key=f"st_t_{cp_idx}_{s_idx}")
-                sec["title_fs"] = sc2.number_input("크기", 10, 80, int(sec.get("title_fs", 32)), key=f"st_fs_{cp_idx}_{s_idx}")
-                sec["title_color"] = sc3.color_picker("색상", sec.get("title_color", "#1a1c1e"), key=f"st_c_{cp_idx}_{s_idx}")
-                sec["col_ratio"] = sc4.slider("비율", 1.0, 4.0, float(sec.get("col_ratio", 1.5)), 0.1, key=f"st_r_{cp_idx}_{s_idx}")
-                if sc5.button("X", key=f"st_del_{cp_idx}_{s_idx}"):
+                sec["title"] = sc1.text_input("섹션 제목", sec.get("title", ""), key=f"st_t{cp_idx}{s_idx}")
+                sec["title_fs"] = sc2.number_input("크기", 10, 80, int(sec.get("title_fs", 32)), key=f"st_fs{cp_idx}{s_idx}")
+                sec["title_color"] = sc3.color_picker("색상", sec.get("title_color", "#1a1c1e"), key=f"st_c{cp_idx}{s_idx}")
+                sec["col_ratio"] = sc4.slider("비율", 1.0, 4.0, float(sec.get("col_ratio", 1.5)), 0.1, key=f"st_r{cp_idx}{s_idx}")
+                if sc5.button("X", key=f"st_del{cp_idx}{s_idx}"):
                     sections.pop(s_idx)
                     st.rerun()
 
@@ -927,17 +975,17 @@ def main_content_area(edit_enabled):
                     with st.expander("이미지 관리"):
                         current_img = sec.get("main_image", "") or ""
                         display_img_url = "" if (isinstance(current_img, str) and current_img.startswith("data:image")) else current_img
-                        new_img_url = st.text_input("URL", value=display_img_url, key=f"simg_url_{cp_idx}_{s_idx}")
-                        sec["image_query"] = st.text_input("자동 검색어 (영어)", value=sec.get("image_query", ""), key=f"simg_q_{cp_idx}_{s_idx}")
-                        img_f = st.file_uploader("업로드", type=["png", "jpg", "jpeg", "gif"], key=f"simg_f_{cp_idx}_{s_idx}")
+                        new_img_url = st.text_input("URL", value=display_img_url, key=f"simg_url{cp_idx}{s_idx}")
+                        sec["image_query"] = st.text_input("자동 검색어 (프로젝트 고유명사+핵심어)", value=sec.get("image_query", ""), key=f"simg_q{cp_idx}{s_idx}")
+                        img_f = st.file_uploader("업로드", type=["png", "jpg", "jpeg", "gif"], key=f"simg_f{cp_idx}{s_idx}")
                         if img_f:
                             sec["main_image"] = f"data:image/png;base64,{base64.b64encode(img_f.getvalue()).decode()}"
                         elif new_img_url != display_img_url:
                             sec["main_image"] = new_img_url
-                        sec["full_width"] = st.toggle("너비 채우기", value=sec.get("full_width", True), key=f"fw_{cp_idx}_{s_idx}")
+                        sec["full_width"] = st.toggle("너비 채우기", value=sec.get("full_width", True), key=f"fw{cp_idx}{s_idx}")
                         if not sec["full_width"]:
-                            sec["img_width"] = st.slider("너비", 100, 1200, int(sec.get("img_width", 750)), key=f"sw_{cp_idx}_{s_idx}")
-                        if st.button("그림 삭제", key=f"simg_del_{cp_idx}_{s_idx}"):
+                            sec["img_width"] = st.slider("너비", 100, 1200, int(sec.get("img_width", 750)), key=f"sw{cp_idx}{s_idx}")
+                        if st.button("그림 삭제", key=f"simg_del{cp_idx}{s_idx}"):
                             sec["main_image"] = None
                             st.rerun()
 
@@ -948,7 +996,7 @@ def main_content_area(edit_enabled):
                     final_src = render_image_src(sec["main_image"])
                     style = "width:100%;" if sec.get("full_width", True) else f"width:{sec.get('img_width', 750)}px; max-width:100%;"
                     st.markdown(
-                        f'<div style="text-align:center;"><img src="{final_src}" onerror="this.onerror=null; this.src=\'{ERROR_IMG}\';" style="{style} border-radius:12px; margin-bottom:20px; box-shadow:0 4px 12px rgba(0,0,0,0.05);" /></div>',
+                        f'<div style="text-align:center;"><img src="{final_src}" onerror="this.onerror=null; this.src={SQ}{ERROR_IMG}{SQ};" style="{style} border-radius:12px; margin-bottom:20px; box-shadow:0 4px 12px rgba(0,0,0,0.05);" /></div>',
                         unsafe_allow_html=True,
                     )
 
@@ -957,9 +1005,9 @@ def main_content_area(edit_enabled):
                         sec["chart_type"] = st.selectbox(
                             "종류", ["Bar", "Line", "Area"],
                             index=["Bar", "Line", "Area"].index(sec.get("chart_type", "Bar")) if sec.get("chart_type") in ["Bar", "Line", "Area"] else 0,
-                            key=f"ch_t_{cp_idx}_{s_idx}",
+                            key=f"ch_t{cp_idx}{s_idx}",
                         )
-                        sec["chart_data"] = st.text_area("데이터 (항목, 숫자)", value=sec.get("chart_data", ""), key=f"ch_d_{cp_idx}_{s_idx}")
+                        sec["chart_data"] = st.text_area("데이터 (항목, 숫자)", value=sec.get("chart_data", ""), key=f"ch_d{cp_idx}{s_idx}")
 
                 if sec.get("chart_data"):
                     try:
@@ -988,13 +1036,13 @@ def main_content_area(edit_enabled):
                     new_lines = []
                     for l_idx, line in enumerate(sec["lines"]):
                         lc1, lc2, lc3, lc4 = st.columns([5, 1.5, 1.5, 0.5])
-                        l_t = lc1.text_input("T", line["text"], key=f"lt_t_{cp_idx}_{s_idx}_{l_idx}", label_visibility="collapsed")
-                        l_s = lc2.number_input("S", 10, 100, int(line["size"]), key=f"lt_s_{cp_idx}_{s_idx}_{l_idx}")
-                        l_c = lc3.color_picker("C", line["color"], key=f"lt_c_{cp_idx}_{s_idx}_{l_idx}")
-                        if not lc4.button("X", key=f"lt_del_{cp_idx}_{s_idx}_{l_idx}"):
+                        l_t = lc1.text_input("T", line["text"], key=f"lt_t{cp_idx}{s_idx}{l_idx}", label_visibility="collapsed")
+                        l_s = lc2.number_input("S", 10, 100, int(line["size"]), key=f"lt_s_{cp_idx}{s_idx}{l_idx}")
+                        l_c = lc3.color_picker("C", line["color"], key=f"lt_c_{cp_idx}{s_idx}{l_idx}")
+                        if not lc4.button("X", key=f"lt_del_{cp_idx}{s_idx}{l_idx}"):
                             new_lines.append({"text": l_t, "size": l_s, "color": l_c})
                     sec["lines"] = new_lines
-                    if st.button("줄 추가", key=f"lt_add_{cp_idx}_{s_idx}"):
+                    if st.button("줄 추가", key=f"lt_add_{cp_idx}{s_idx}"):
                         sec["lines"].append({"text": "새 문구", "size": 22, "color": "#1e293b"})
                         st.rerun()
                 else:
@@ -1008,10 +1056,10 @@ def main_content_area(edit_enabled):
                 sec.setdefault("side_items", [])
                 if edit_enabled:
                     sca, scb = st.columns(2)
-                    if sca.button("지표 추가", key=f"si_add_m_{cp_idx}_{s_idx}"):
+                    if sca.button("지표 추가", key=f"si_add_m{cp_idx}{s_idx}"):
                         sec["side_items"].append({"type": "metric", "label": "항목", "value": "0", "color": "#007bff", "label_fs": 14, "label_color": "#64748b", "value_fs": 28})
                         st.rerun()
-                    if scb.button("그림 추가", key=f"si_add_i_{cp_idx}_{s_idx}"):
+                    if scb.button("그림 추가", key=f"si_add_i{cp_idx}{s_idx}"):
                         sec["side_items"].append({"type": "image", "src": None, "width": 350, "image_query": ""})
                         st.rerun()
 
@@ -1019,26 +1067,26 @@ def main_content_area(edit_enabled):
                     if edit_enabled:
                         with st.expander(f"{item.get('label', '아이템')} 편집", expanded=True):
                             if item["type"] == "metric":
-                                item["label"] = st.text_input("라벨", item.get("label"), key=f"si_l_{cp_idx}_{s_idx}_{i_idx}")
-                                item["value"] = st.text_area("내용", item.get("value"), height=120, key=f"si_v_{cp_idx}_{s_idx}_{i_idx}")
+                                item["label"] = st.text_input("라벨", item.get("label"), key=f"si_l{cp_idx}{s_idx}{i_idx}")
+                                item["value"] = st.text_area("내용", item.get("value"), height=120, key=f"si_v_{cp_idx}{s_idx}{i_idx}")
                                 ic3, ic4 = st.columns(2)
-                                item["label_fs"] = ic3.number_input("라벨크기", 10, 60, int(item.get("label_fs", 14)), key=f"si_lfs_{cp_idx}_{s_idx}_{i_idx}")
-                                item["label_color"] = ic4.color_picker("라벨색상", item.get("label_color", "#64748b"), key=f"si_lc_{cp_idx}_{s_idx}_{i_idx}")
+                                item["label_fs"] = ic3.number_input("라벨크기", 10, 60, int(item.get("label_fs", 14)), key=f"si_lfs_{cp_idx}{s_idx}{i_idx}")
+                                item["label_color"] = ic4.color_picker("라벨색상", item.get("label_color", "#64748b"), key=f"si_lc_{cp_idx}{s_idx}{i_idx}")
                                 ic5, ic6 = st.columns(2)
-                                item["value_fs"] = ic5.number_input("내용크기", 10, 100, int(item.get("value_fs", 28)), key=f"si_vfs_{cp_idx}_{s_idx}_{i_idx}")
-                                item["color"] = ic6.color_picker("내용색상", item.get("color", "#007bff"), key=f"si_vc_{cp_idx}_{s_idx}_{i_idx}")
+                                item["value_fs"] = ic5.number_input("내용크기", 10, 100, int(item.get("value_fs", 28)), key=f"si_vfs_{cp_idx}{s_idx}{i_idx}")
+                                item["color"] = ic6.color_picker("내용색상", item.get("color", "#007bff"), key=f"si_vc_{cp_idx}{s_idx}{i_idx}")
                             elif item["type"] == "image":
                                 current_side = item.get("src", "") or ""
                                 display_side = "" if (isinstance(current_side, str) and current_side.startswith("data:image")) else current_side
-                                new_side_url = st.text_input("URL", value=display_side, key=f"si_url_{cp_idx}_{s_idx}_{i_idx}")
-                                item["image_query"] = st.text_input("검색어(영어)", value=item.get("image_query", ""), key=f"si_q_{cp_idx}_{s_idx}_{i_idx}")
-                                siu = st.file_uploader("업로드", type=["png", "jpg", "jpeg", "gif"], key=f"si_iu_{cp_idx}_{s_idx}_{i_idx}")
+                                new_side_url = st.text_input("URL", value=display_side, key=f"si_url_{cp_idx}{s_idx}{i_idx}")
+                                item["image_query"] = st.text_input("검색어(프로젝트 고유명사+핵심어)", value=item.get("image_query", ""), key=f"si_q_{cp_idx}{s_idx}{i_idx}")
+                                siu = st.file_uploader("업로드", type=["png", "jpg", "jpeg", "gif"], key=f"si_iu_{cp_idx}{s_idx}{i_idx}")
                                 if siu:
                                     item["src"] = f"data:image/png;base64,{base64.b64encode(siu.getvalue()).decode()}"
                                 elif new_side_url != display_side:
                                     item["src"] = new_side_url
-                                item["width"] = st.slider("너비", 100, 500, int(item.get("width", 350)), key=f"si_iw_{cp_idx}_{s_idx}_{i_idx}")
-                            if st.button("삭제", key=f"si_del_{cp_idx}_{s_idx}_{i_idx}"):
+                                item["width"] = st.slider("너비", 100, 500, int(item.get("width", 350)), key=f"si_iw_{cp_idx}{s_idx}{i_idx}")
+                            if st.button("삭제", key=f"si_del_{cp_idx}{s_idx}{i_idx}"):
                                 sec["side_items"].pop(i_idx)
                                 st.rerun()
 
@@ -1061,7 +1109,7 @@ def main_content_area(edit_enabled):
                             final_side_src = render_image_src(item["src"])
                             st.markdown(
                                 f'<div class="side-slot-card">'
-                                f'<img src="{final_side_src}" onerror="this.onerror=null; this.src=\'{ERROR_IMG}\';" style="width:{item.get("width", 350)}px; max-width:100%; border-radius:12px; box-shadow:0 4px 12px rgba(0,0,0,0.08);" />'
+                                f'<img src="{final_side_src}" onerror="this.onerror=null; this.src={SQ}{ERROR_IMG}{SQ};" style="width:{item.get("width", 350)}px; max-width:100%; border-radius:12px; box-shadow:0 4px 12px rgba(0,0,0,0.08);" />'
                                 f'</div>',
                                 unsafe_allow_html=True,
                             )
