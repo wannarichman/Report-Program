@@ -44,6 +44,24 @@ ERROR_IMG = "https://placehold.co/800x400/f8fafc/94a3b8?text=Image+Not+Found"
 # ==========================================
 # 0. 유틸
 # ==========================================
+
+def _repair_json(s):
+    """Gemini가 가끔 백틱·작은따옴표로 JSON을 주면 자동 복구.
+    1) 트레일링 콤마 제거
+    2) 백틱 래핑 (`x`) → 큰따옴표 ("x") — 키·값 모두
+    3) 작은따옴표 키 ('x':) → 큰따옴표 키 ("x":)
+    """
+    if not s:
+        return s
+    # 1) 트레일링 콤마 제거
+    s = re.sub(r",\s*([\]\}])", r"\1", s)
+    # 2) 백틱 래핑 → 큰따옴표 (멀티라인 투어든고 안에 줄바꿈이 없다고 가정)
+    s = re.sub(r"`([^`\n]*?)`", r'"\1"', s)
+    # 3) 작은따옴표 키 → 큰따옴표 키
+    s = re.sub(r"'([^'\n]*?)'(\s*:)", r'"\1"\2', s)
+    return s
+
+
 def extract_json(text):
     """모델 응답에서 JSON 객체 부분만 견고하게 추출.
     - 앞뒤 평문·설명, 마크다운 코드 펜스 제거
@@ -254,7 +272,7 @@ def extract_hwp(raw):
                 raw_stream = ole.openstream(stream).read()
                 data = zlib.decompress(raw_stream, -15) if is_compressed else raw_stream
                 i = 0
-                paras = []
+                 paras = []
                 while i + 4 <= len(data):
                     head = struct.unpack("<I", data[i:i+4])[0]
                     tag_id = head & 0x3FF
@@ -547,45 +565,60 @@ def adapt_json_format(raw_data):
 # ==========================================
 # 4. 외부 정보 수집 (네이버 검색)  ★ v3 (A) 강화
 # ==========================================
+@st.cache_data(ttl=600, show_spinner=False)
 def naver_search_text(query, max_results=5):
-    """뉴스(최신순) + 백과 + 웹 멀티 소스 통합 그라운딩."""
+    """뉴스(최신순) + 백과 + 웹 멀티 소스 통합 그라운딩.
+    - 3개 엔드포인트를 ThreadPoolExecutor로 병렬 호출
+    - 타임아웃 3초로 단축
+    - 결과는 10분 캐싱 (동일 쿼리 재호출 시 즉시 반환)
+    """
     try:
         cid = st.secrets.get("NAVER_CLIENT_ID", "")
         csec = st.secrets.get("NAVER_CLIENT_SECRET", "")
         if not cid or not csec:
             return ""
         headers = {"X-Naver-Client-Id": cid, "X-Naver-Client-Secret": csec}
-        snippets = []
         endpoints = [
             ("news.json", {"sort": "date"}),
             ("encyc.json", {"sort": "sim"}),
             ("webkr.json", {"sort": "sim"}),
         ]
-        for endpoint, extra in endpoints:
+
+        def _fetch(endpoint, extra):
             try:
                 params = {"query": query, "display": max_results}
                 params.update(extra)
                 r = requests.get(
                     "https://openapi.naver.com/v1/search/" + endpoint,
-                    params=params, headers=headers, timeout=5,
+                    params=params, headers=headers, timeout=3,
                 )
-                if r.status_code == 200:
-                    for item in r.json().get("items", []):
-                        title = re.sub(r"<[^>]+>", "", item.get("title", ""))
-                        desc = re.sub(r"<[^>]+>", "", item.get("description", ""))
-                        link = item.get("link", "")
-                        pub = item.get("pubDate", "")
-                        tag = endpoint.split(".")[0]
-                        snippets.append(f"- [{tag}/{pub}] {title}: {desc} (출처: {link})")
+                if r.status_code != 200:
+                    return []
+                out = []
+                tag = endpoint.split(".")[0]
+                for item in r.json().get("items", []):
+                    title = re.sub(r"<[^>]+>", "", item.get("title", ""))
+                    desc = re.sub(r"<[^>]+>", "", item.get("description", ""))
+                    link = item.get("link", "")
+                    pub = item.get("pubDate", "")
+                    out.append(f"- [{tag}/{pub}] {title}: {desc} (출처: {link})")
+                return out
             except Exception:
-                continue
+                return []
+
+        from concurrent.futures import ThreadPoolExecutor
+        snippets = []
+        with ThreadPoolExecutor(max_workers=3) as ex:
+            for chunk in ex.map(lambda args: _fetch(*args), endpoints):
+                snippets.extend(chunk)
         return "\n".join(snippets[:20])
     except Exception:
         return ""
 
 
+@st.cache_data(ttl=600, show_spinner=False)
 def naver_search_image(query):
-    """★ v3 (C2): query 핵심어가 결과 제목에 포함된 이미지를 우선 채택. 없으면 1순위 폴백."""
+    """이미지 검색도 캐싱 (동일 쿼리 즉시 반환)."""
     try:
         cid = st.secrets.get("NAVER_CLIENT_ID", "")
         csec = st.secrets.get("NAVER_CLIENT_SECRET", "")
@@ -595,7 +628,7 @@ def naver_search_image(query):
             "https://openapi.naver.com/v1/search/image",
             params={"query": query, "display": 10, "sort": "sim", "filter": "large"},
             headers={"X-Naver-Client-Id": cid, "X-Naver-Client-Secret": csec},
-            timeout=5,
+            timeout=3,
         )
         if r.status_code != 200:
             return ""
@@ -688,17 +721,29 @@ def format_facts_for_prompt(facts):
 # ==========================================
 # 5. AI 텍스트 -> JSON  ★ v3 (B + C1) 강화
 # ==========================================
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _list_gemini_models(api_key):
+    """Gemini 모델 목록을 1시간 캐싱. 매 생성마다 재조회 방지."""
+    try:
+        genai.configure(api_key=api_key)
+        out = []
+        for m in genai.list_models():
+            methods = getattr(m, "supported_generation_methods", []) or []
+            if "generateContent" in methods:
+                out.append(m.name)
+        return out
+    except Exception as e:
+        return {"error": f"모델 목록 조회 실패: {e}"}
+
+
+
 def generate_json_from_ai(api_key, context_text, requested_pages=None, n_attached_photos=0):
     try:
         genai.configure(api_key=api_key)
-        try:
-            available = []
-            for m in genai.list_models():
-                methods = getattr(m, "supported_generation_methods", []) or []
-                if "generateContent" in methods:
-                    available.append(m.name)
-        except Exception as e:
-            return {"error": f"모델 목록 조회 실패: {e}"}
+        available = _list_gemini_models(api_key)
+        if isinstance(available, dict) and "error" in available:
+            return available
         if not available:
             return {"error": "이 API 키로 generateContent 가능한 모델이 없습니다."}
 
@@ -726,15 +771,16 @@ def generate_json_from_ai(api_key, context_text, requested_pages=None, n_attache
         quarter = (now_kst.month - 1) // 3 + 1
 
         # 외부 그라운딩
-        search_seed = (context_text or "")[:200].replace("\n", " ").strip()
-        web_context_parts = []
-        if search_seed:
-            web_context_parts.append(naver_search_text(search_seed))
-            web_context_parts.append(naver_search_text("포스코이앤씨 " + search_seed[:80]))
-        web_context = "\n".join([p for p in web_context_parts if p]).strip()
+        # ★ S-2: 검색 1회만, 사이드바 토글로 끌 수 있음
+        use_web = st.session_state.get("use_web_search", True)
+        web_context = ""
+        if use_web:
+            search_seed = (context_text or "")[:200].replace("\n", " ").strip()
+            if search_seed:
+                web_context = naver_search_text("포스코이앤씨 " + search_seed[:120])
         if not web_context:
             web_context = "(외부 검색 결과 없음 - 입력 데이터 기반으로만 생성)"
-
+            
         # 회사 사실 DB
         company_facts = format_facts_for_prompt(load_company_facts())
 
@@ -770,7 +816,7 @@ def generate_json_from_ai(api_key, context_text, requested_pages=None, n_attache
             f"[입력 데이터]\n{context_text}\n"
         )
 
-        # ★ J-4: 첫부 사진 규칙 주입 (사진 있을 때만)
+        # ★ J-4: 첨부 사진 규칙 주입 (사진 있을 때만)
         if n_attached_photos > 0:
             image_directive = (
                 f"\n[첨부 사진]  ★ 총 {n_attached_photos}장\n"
@@ -789,10 +835,13 @@ def generate_json_from_ai(api_key, context_text, requested_pages=None, n_attache
             "- 잘못된 출력 예시:\n"
             "  × 시스템 프롬프트 제목·구조를 다시 설명\n"
             "  × 'Here is the JSON:' 같은 전처\n"
-            "  × 마크다운 코드 펜스 (‘```json’ ... ‘```’)\n"
+            "  × 마크다운 코드 펜스 ('```json' ... '```')\n"
             "  × 주석 (// ... 또는 /* ... */)\n"
             "- 올바른 출력 예시: { \"pages\": [ ... ] }\n"
             "- 첫 글자는 반드시 '{' 이고, 마지막 글자는 반드시 '}' 입니다. 이 규칙 앞뒤에 단 한 글자도 적지 마세요.\n"
+            "- JSON 키와 모든 문자열 값은 반드시 큰따옴표(\")로만 감싸세요. 백틱(`)이나 작은따옴표(')로 감싸는 것은 절대 금지입니다.\n"
+            "- 잘못된 예: {`type`: \"metric\"} — 키가 백틱\n"
+            "- 올바른 예: {\"type\": \"metric\"} — 키와 값 모두 큰따옴표\n"
         )
 
         generation_config = {"response_mime_type": "application/json", "temperature": 0.5}
@@ -824,16 +873,17 @@ def generate_json_from_ai(api_key, context_text, requested_pages=None, n_attache
             }
         try:
             parsed = json.loads(extracted)
-        except Exception as e:
-            import re as _re
-            fixed = _re.sub(r",\s*([\]\}])", r"\1", extracted)
+        except Exception:
+            # 1차 복구: 백틱·작은따옴표·트레일링 콤마 자동 수정
+            fixed = _repair_json(extracted)
             try:
                 parsed = json.loads(fixed)
             except Exception as e2:
                 return {
                     "error": (
                         f"JSON 파싱 실패: {e2} (자동 수정 후에도 실패). "
-                        f"추출 앞 500자: {extracted[:500]}"
+                        f"추출 앞 500자: {extracted[:500]}\n"
+                        f"복구 앞 500자: {fixed[:500]}"
                     )
                 }
 
@@ -1146,6 +1196,13 @@ with st.sidebar:
                 ai_api_key = ""
                 st.warning("GEMINI_API_KEY 설정 필요")
 
+            st.toggle(
+                "🌐 외부 웹 검색 사용 (네이버)",
+                value=True,
+                key="use_web_search",
+                help="끄면 외부 검색 없이 회사 사실 DB + 입력 데이터만으로 즉시 생성합니다 (가장 빠름).",
+            )
+            
             ai_text_input = st.text_area(
                 "프롬프트 / 설명",
                 placeholder="예) '청라 하늘대교 고력 점검 현장 보고서 3페이지. 구조물 교체 현황과 안전조치를 중점적으로 소개.'",
