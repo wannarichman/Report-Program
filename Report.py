@@ -871,7 +871,10 @@ def _list_gemini_models(api_key):
         for m in genai.list_models():
             methods = getattr(m, "supported_generation_methods", []) or []
             if "generateContent" in methods:
-                out.append(m.name)
+                name_lower = m.name.lower()
+                # 텍스트/JSON 생성을 지원하지 않는 음성(TTS) 및 임베딩 모델 등 필터링
+                if "tts" not in name_lower and "embed" not in name_lower:
+                    out.append(m.name)
         return out
     except Exception as e:
         return {"error": f"모델 목록 조회 실패: {e}"}
